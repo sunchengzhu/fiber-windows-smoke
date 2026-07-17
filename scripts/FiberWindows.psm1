@@ -144,6 +144,24 @@ function ConvertTo-HexQuantity {
     return "0x$hex"
 }
 
+function Convert-CkbToShannons {
+    param(
+        [Parameter(Mandatory = $true)]
+        [decimal]$AmountCkb
+    )
+
+    if ($AmountCkb -le [decimal]::Zero) {
+        throw "CKB amount must be positive"
+    }
+    $shannons = $AmountCkb * [decimal]100000000
+    if ($shannons -ne [decimal]::Truncate($shannons)) {
+        throw "CKB amount supports at most 8 decimal places"
+    }
+    return [System.Numerics.BigInteger]::Parse(
+        $shannons.ToString("0", [System.Globalization.CultureInfo]::InvariantCulture)
+    )
+}
+
 function Get-FiberAuthHeaders {
     param(
         [Parameter(Mandatory = $true)]
@@ -510,6 +528,7 @@ function Start-FiberService {
 }
 
 Export-ModuleMember -Function @(
+    "Convert-CkbToShannons",
     "ConvertTo-HexQuantity",
     "ConvertTo-CkbAddress",
     "Get-ChannelStateName",

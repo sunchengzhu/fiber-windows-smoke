@@ -108,8 +108,10 @@ WinSW XML 必须保存 FNN 启动所需的 key password。脚本会用 Windows A
 首次显式执行：
 
 ```powershell
-.\scripts\Ensure-Channel.ps1 -SettingsPath .\config\node-settings.json
+.\scripts\Ensure-Channel.ps1 -FundingAmountCkb 2000
 ```
+
+`FundingAmountCkb` 使用直观的 CKB 单位；脚本会换算成 shannons、同步机器运行配置，然后开通 channel。省略该参数时使用 `node-settings.json` 中已有的金额。
 
 流程是：
 
