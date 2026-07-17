@@ -85,7 +85,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 5. 将 P2P 改成 outbound-only，并保留 RPC 的 localhost 绑定。
 6. 生成新的 CKB private key。
 7. 下载并校验固定版本的 WinSW 2.12.0。
-8. 询问至少 12 字符的 key 加密密码。
+8. 要求输入并确认至少 12 字符的 key 加密密码。
 9. 以 `LocalSystem` 安装自动启动的 `FiberNode` 服务。
 10. 等待 RPC 健康并打印 pubkey 与 CKB address。
 

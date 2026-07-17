@@ -47,15 +47,31 @@ if (-not (Test-Path -LiteralPath $paths.CkbKey -PathType Leaf)) {
     Write-Host "Generated a new CKB private key. FNN will encrypt it on first start."
 }
 
+$passwordConfirmation = $null
 if ($null -eq $SecretKeyPassword) {
     $SecretKeyPassword = Read-Host "Password used by FNN to encrypt/decrypt the CKB key" -AsSecureString
+    $passwordConfirmation = Read-Host "Confirm the FNN CKB key password" -AsSecureString
 }
 $passwordPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecretKeyPassword)
+$confirmationPtr = [IntPtr]::Zero
+$plainPasswordConfirmation = $null
 try {
     $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPtr)
+    if ($null -ne $passwordConfirmation) {
+        $confirmationPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordConfirmation)
+        $plainPasswordConfirmation = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($confirmationPtr)
+        if (-not [string]::Equals($plainPassword, $plainPasswordConfirmation, [System.StringComparison]::Ordinal)) {
+            $plainPassword = $null
+            throw "Secret key passwords do not match; run the installer again"
+        }
+    }
 }
 finally {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPtr)
+    if ($confirmationPtr -ne [IntPtr]::Zero) {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($confirmationPtr)
+    }
+    $plainPasswordConfirmation = $null
 }
 if ([string]::IsNullOrWhiteSpace($plainPassword) -or $plainPassword.Length -lt 12) {
     throw "Secret key password must be at least 12 characters"
