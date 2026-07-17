@@ -57,8 +57,15 @@ $liquidityBar = Format-FiberLiquidityBar `
     -LocalBalance ([System.Numerics.BigInteger]::Parse("190100000000")) `
     -RemoteBalance ([System.Numerics.BigInteger]::Parse("15100000000")) `
     -Width 20
-if ($liquidityBar -ne "LOCAL 92.64% [###################-] 7.36% REMOTE") {
+if ($liquidityBar -ne "LOCAL 92.6413% [###################-] 7.3587% REMOTE") {
     throw "Format-FiberLiquidityBar produced an unexpected visualization: $liquidityBar"
+}
+$tinyRemoteLiquidityBar = Format-FiberLiquidityBar `
+    -LocalBalance ([System.Numerics.BigInteger]::Parse("490098000000")) `
+    -RemoteBalance ([System.Numerics.BigInteger]::Parse("2000000")) `
+    -Width 24
+if ($tinyRemoteLiquidityBar -ne "LOCAL 99.9996% [########################] 0.0004% REMOTE") {
+    throw "Format-FiberLiquidityBar rounded a small non-zero balance to zero: $tinyRemoteLiquidityBar"
 }
 
 $modernChannel = [pscustomobject]@{

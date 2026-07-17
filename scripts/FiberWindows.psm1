@@ -198,7 +198,7 @@ function Format-FiberLiquidityBar {
 
     $totalBalance = $LocalBalance + $RemoteBalance
     if ($totalBalance -eq [System.Numerics.BigInteger]::Zero) {
-        return "LOCAL 0.00% [" + ("-" * $Width) + "] 0.00% REMOTE"
+        return "LOCAL 0.0000% [" + ("-" * $Width) + "] 0.0000% REMOTE"
     }
 
     $localSegments = [int][System.Numerics.BigInteger]::Divide(
@@ -209,8 +209,8 @@ function Format-FiberLiquidityBar {
     $localPercent = ([decimal]$LocalBalance * [decimal]100) / [decimal]$totalBalance
     $remotePercent = [decimal]100 - $localPercent
     $bar = ("#" * $localSegments) + ("-" * ($Width - $localSegments))
-    return "LOCAL $($localPercent.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture))% " +
-        "[$bar] $($remotePercent.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture))% REMOTE"
+    return "LOCAL $($localPercent.ToString("0.0000", [System.Globalization.CultureInfo]::InvariantCulture))% " +
+        "[$bar] $($remotePercent.ToString("0.0000", [System.Globalization.CultureInfo]::InvariantCulture))% REMOTE"
 }
 
 function Convert-CkbToShannons {
