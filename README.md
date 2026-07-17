@@ -197,7 +197,7 @@ node_info
 1. 节点 A 调用 `new_invoice` 生成 `0.02 CKB` invoice，节点 B 支付给 A；
 2. 节点 A 向 Bottle keysend `0.01 CKB`。
 
-脚本逐笔等待 `Success`，并显示支付前后的 channel 两端 CKB 余额。临时覆盖金额时可执行：
+脚本逐笔等待 `Success`，并用醒目的 `BEFORE` / `AFTER - SUCCESS` 标题显示 channel 两端余额变化。GitHub Actions 运行时还会在 Job Summary 中生成一份 `B -> A -> Bottle` 资金流摘要。临时覆盖金额时可执行：
 
 ```powershell
 .\scripts\Send-PaymentFlow.ps1 -InvoiceAmountCkb 0.02 -KeysendAmountCkb 0.01

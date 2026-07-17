@@ -62,6 +62,7 @@ if (-not $PSBoundParameters.ContainsKey("KeysendAmountCkb")) {
 }
 
 $invoiceAmount = Convert-CkbToShannons -AmountCkb $InvoiceAmountCkb
+$keysendAmount = Convert-CkbToShannons -AmountCkb $KeysendAmountCkb
 $primaryInfo = Wait-FiberRpc -Settings $primarySettings -TimeoutSeconds 60
 $secondaryInfo = Wait-FiberRpc -Settings $secondarySettings -TimeoutSeconds 60
 if (-not [string]::Equals(
@@ -81,13 +82,26 @@ if ($secondaryReadyChannels.Count -eq 0) {
     throw "Node B has no ready channel to node A; run Ensure-SecondNodeChannel.ps1 first"
 }
 
-Write-Host "Payment flow"
-[pscustomobject]@{
-    Invoice = "Node B -> node A: $InvoiceAmountCkb CKB"
-    Keysend = "Node A -> $($primarySettings.peer.name): $KeysendAmountCkb CKB"
-    NodeA   = [string]$primaryInfo.pubkey
-    NodeB   = [string]$secondaryInfo.pubkey
-} | Format-List
+function Format-FlowCkb {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$Shannons
+    )
+
+    return (Format-CkbBalance -Shannons $Shannons).TrimEnd("0").TrimEnd(".")
+}
+
+$invoiceAmountDisplay = Format-FlowCkb -Shannons $invoiceAmount
+$keysendAmountDisplay = Format-FlowCkb -Shannons $keysendAmount
+$bottleName = [string]$primarySettings.peer.name
+
+Write-Host ("=" * 60)
+Write-Host "PAYMENT FLOW"
+Write-Host ("=" * 60)
+Write-Host "Node B -- $invoiceAmountDisplay CKB Invoice --> Node A"
+Write-Host "Node A -- $keysendAmountDisplay CKB Keysend --> $bottleName"
+Write-Host "Node A: $($primaryInfo.pubkey)"
+Write-Host "Node B: $($secondaryInfo.pubkey)"
 
 $invoiceResult = Invoke-FiberRpc -Settings $primarySettings -Method "new_invoice" -Params @(@{
     amount         = ConvertTo-HexQuantity -Value $invoiceAmount
@@ -102,15 +116,70 @@ if ([string]::IsNullOrWhiteSpace($invoice)) {
     throw "Node A new_invoice returned no invoice_address"
 }
 
-& (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
+$invoicePayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
     -SettingsPath $SecondarySettingsPath `
     -Mode Invoice `
     -AmountCkb $InvoiceAmountCkb `
-    -Invoice $invoice
+    -Invoice $invoice `
+    -PassThru
 
-& (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
+$keysendPayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
     -SettingsPath $PrimarySettingsPath `
     -Mode Keysend `
-    -AmountCkb $KeysendAmountCkb
+    -AmountCkb $KeysendAmountCkb `
+    -PassThru
+
+$invoiceLocalBefore = Format-FlowCkb -Shannons $invoicePayment.LocalBefore
+$invoiceLocalAfter = Format-FlowCkb -Shannons $invoicePayment.LocalAfter
+$invoiceRemoteBefore = Format-FlowCkb -Shannons $invoicePayment.RemoteBefore
+$invoiceRemoteAfter = Format-FlowCkb -Shannons $invoicePayment.RemoteAfter
+$invoiceFee = Format-FlowCkb -Shannons $invoicePayment.Fee
+$keysendLocalBefore = Format-FlowCkb -Shannons $keysendPayment.LocalBefore
+$keysendLocalAfter = Format-FlowCkb -Shannons $keysendPayment.LocalAfter
+$keysendRemoteBefore = Format-FlowCkb -Shannons $keysendPayment.RemoteBefore
+$keysendRemoteAfter = Format-FlowCkb -Shannons $keysendPayment.RemoteAfter
+$keysendFee = Format-FlowCkb -Shannons $keysendPayment.Fee
+
+Write-Host ""
+Write-Host ("=" * 60)
+Write-Host "PAYMENT FLOW RESULT - SUCCESS"
+Write-Host ("=" * 60)
+Write-Host "1. Node B -> Node A | Invoice $invoiceAmountDisplay CKB"
+Write-Host "   Node B : $invoiceLocalBefore -> $invoiceLocalAfter CKB"
+Write-Host "   Node A : $invoiceRemoteBefore -> $invoiceRemoteAfter CKB"
+Write-Host "   Fee    : $invoiceFee CKB"
+Write-Host ""
+Write-Host "2. Node A -> $bottleName | Keysend $keysendAmountDisplay CKB"
+Write-Host "   Node A : $keysendLocalBefore -> $keysendLocalAfter CKB"
+Write-Host "   Bottle : $keysendRemoteBefore -> $keysendRemoteAfter CKB"
+Write-Host "   Fee    : $keysendFee CKB"
+Write-Host ""
+Write-Host "FUNDS FLOW: Node B -- $invoiceAmountDisplay Invoice --> Node A -- $keysendAmountDisplay Keysend --> Bottle"
+
+if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
+    $summary = @"
+## Payment flow result
+
+> **Node B** -- **$invoiceAmountDisplay CKB Invoice** --> **Node A** -- **$keysendAmountDisplay CKB Keysend** --> **Bottle**
+
+### 1. Node B -> Node A - Invoice ($invoiceAmountDisplay CKB)
+
+- **Node B:** $invoiceLocalBefore -> $invoiceLocalAfter CKB
+- **Node A:** $invoiceRemoteBefore -> $invoiceRemoteAfter CKB
+- **Fee:** $invoiceFee CKB
+- **Status:** **Success**
+- **Payment hash:** $($invoicePayment.PaymentHash)
+
+### 2. Node A -> Bottle - Keysend ($keysendAmountDisplay CKB)
+
+- **Node A:** $keysendLocalBefore -> $keysendLocalAfter CKB
+- **Bottle:** $keysendRemoteBefore -> $keysendRemoteAfter CKB
+- **Fee:** $keysendFee CKB
+- **Status:** **Success**
+- **Payment hash:** $($keysendPayment.PaymentHash)
+"@
+    $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+    Write-Host "GitHub Job Summary updated"
+}
 
 Write-Host "Payment flow succeeded: invoice $InvoiceAmountCkb CKB, keysend $KeysendAmountCkb CKB"
