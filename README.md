@@ -253,7 +253,7 @@ fiber-windows
 C:\fiber-node\automation\settings.json
 ```
 
-workflow 每天北京时间 10:00 执行：
+workflow 每天北京时间 07:00 执行（GitHub Actions cron 使用 UTC，因此配置为前一天 `23:00 UTC`）：
 
 1. PowerShell 语法检查；
 2. 小型模块测试；
