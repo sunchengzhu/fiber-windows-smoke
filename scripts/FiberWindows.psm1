@@ -180,6 +180,51 @@ function Format-CkbBalance {
         $fractionalShannons.ToString("D8", [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
+function Assert-FiberDirectPaymentBalance {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$ExpectedAmount,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$Fee,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$LocalBefore,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$LocalAfter,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$RemoteBefore,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$RemoteAfter
+    )
+
+    if ($ExpectedAmount -le [System.Numerics.BigInteger]::Zero) {
+        throw "$Label expected payment amount must be positive"
+    }
+    if ($Fee -ne [System.Numerics.BigInteger]::Zero) {
+        throw "$Label direct payment fee assertion failed: expected 0 CKB, actual $(Format-CkbBalance -Shannons $Fee) CKB"
+    }
+
+    $localDecrease = $LocalBefore - $LocalAfter
+    $remoteIncrease = $RemoteAfter - $RemoteBefore
+    if ($localDecrease -ne $ExpectedAmount) {
+        throw "$Label local balance assertion failed: expected decrease $(Format-CkbBalance -Shannons $ExpectedAmount) CKB, actual change $($localDecrease.ToString()) shannons"
+    }
+    if ($remoteIncrease -ne $ExpectedAmount) {
+        throw "$Label remote balance assertion failed: expected increase $(Format-CkbBalance -Shannons $ExpectedAmount) CKB, actual change $($remoteIncrease.ToString()) shannons"
+    }
+    if ($localDecrease -ne $remoteIncrease) {
+        throw "$Label channel balance conservation assertion failed: local decrease and remote increase differ"
+    }
+
+    return [pscustomobject]@{
+        LocalDecrease  = $localDecrease
+        RemoteIncrease = $remoteIncrease
+        Fee            = $Fee
+        Status         = "Passed"
+    }
+}
+
 function Format-FiberLiquidityBar {
     param(
         [Parameter(Mandatory = $true)]
@@ -607,6 +652,7 @@ function Start-FiberService {
 }
 
 Export-ModuleMember -Function @(
+    "Assert-FiberDirectPaymentBalance",
     "Convert-CkbToShannons",
     "ConvertFrom-HexQuantity",
     "ConvertTo-HexQuantity",

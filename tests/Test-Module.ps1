@@ -53,6 +53,73 @@ if ((ConvertFrom-HexQuantity -Value "0x2c42d7cd00") -ne [System.Numerics.BigInte
 if ((Format-CkbBalance -Shannons ([System.Numerics.BigInteger]::Parse("190100000000"))) -ne "1901.00000000") {
     throw "Format-CkbBalance produced an unexpected CKB amount"
 }
+
+function Assert-ActionFails {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Action,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedMessage
+    )
+
+    $failed = $false
+    try {
+        & $Action | Out-Null
+    }
+    catch {
+        $failed = $true
+        if ($_.Exception.Message -notlike "*$ExpectedMessage*") {
+            throw "Expected failure containing '$ExpectedMessage', got: $($_.Exception.Message)"
+        }
+    }
+    if (-not $failed) {
+        throw "Expected action to fail with '$ExpectedMessage'"
+    }
+}
+
+$directPaymentAssertion = Assert-FiberDirectPaymentBalance `
+    -Label "Invoice" `
+    -ExpectedAmount ([System.Numerics.BigInteger]::Parse("2000000")) `
+    -Fee ([System.Numerics.BigInteger]::Zero) `
+    -LocalBefore ([System.Numerics.BigInteger]::Parse("490096000000")) `
+    -LocalAfter ([System.Numerics.BigInteger]::Parse("490094000000")) `
+    -RemoteBefore ([System.Numerics.BigInteger]::Parse("4000000")) `
+    -RemoteAfter ([System.Numerics.BigInteger]::Parse("6000000"))
+if ($directPaymentAssertion.Status -ne "Passed") {
+    throw "Exact direct payment balance assertion did not pass"
+}
+
+Assert-ActionFails -ExpectedMessage "local balance assertion failed" -Action {
+    Assert-FiberDirectPaymentBalance `
+        -Label "Invoice" `
+        -ExpectedAmount ([System.Numerics.BigInteger]::Parse("2000000")) `
+        -Fee ([System.Numerics.BigInteger]::Zero) `
+        -LocalBefore ([System.Numerics.BigInteger]::Parse("490096000000")) `
+        -LocalAfter ([System.Numerics.BigInteger]::Parse("490094000001")) `
+        -RemoteBefore ([System.Numerics.BigInteger]::Parse("4000000")) `
+        -RemoteAfter ([System.Numerics.BigInteger]::Parse("6000000"))
+}
+Assert-ActionFails -ExpectedMessage "remote balance assertion failed" -Action {
+    Assert-FiberDirectPaymentBalance `
+        -Label "Keysend" `
+        -ExpectedAmount ([System.Numerics.BigInteger]::Parse("1000000")) `
+        -Fee ([System.Numerics.BigInteger]::Zero) `
+        -LocalBefore ([System.Numerics.BigInteger]::Parse("190097000000")) `
+        -LocalAfter ([System.Numerics.BigInteger]::Parse("190096000000")) `
+        -RemoteBefore ([System.Numerics.BigInteger]::Parse("15103000000")) `
+        -RemoteAfter ([System.Numerics.BigInteger]::Parse("15103999999"))
+}
+Assert-ActionFails -ExpectedMessage "fee assertion failed" -Action {
+    Assert-FiberDirectPaymentBalance `
+        -Label "Keysend" `
+        -ExpectedAmount ([System.Numerics.BigInteger]::Parse("1000000")) `
+        -Fee ([System.Numerics.BigInteger]::One) `
+        -LocalBefore ([System.Numerics.BigInteger]::Parse("190097000000")) `
+        -LocalAfter ([System.Numerics.BigInteger]::Parse("190096000000")) `
+        -RemoteBefore ([System.Numerics.BigInteger]::Parse("15103000000")) `
+        -RemoteAfter ([System.Numerics.BigInteger]::Parse("15104000000"))
+}
+
 $liquidityBar = Format-FiberLiquidityBar `
     -LocalBalance ([System.Numerics.BigInteger]::Parse("190100000000")) `
     -RemoteBalance ([System.Numerics.BigInteger]::Parse("15100000000")) `
