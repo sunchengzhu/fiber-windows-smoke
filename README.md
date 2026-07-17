@@ -180,6 +180,12 @@ node_info
 .\scripts\Test-PaymentTopology.ps1
 ```
 
+默认使用紧凑模式，只显示两个节点的服务、版本、peer 数、Channel 状态、余额和占比，整个结果约 8 行。排查问题时可以查看 pubkey、CKB 地址和 Channel ID 等完整信息：
+
+```powershell
+.\scripts\Test-PaymentTopology.ps1 -Detailed
+```
+
 ## 7. 手动执行完整资金流
 
 ```powershell

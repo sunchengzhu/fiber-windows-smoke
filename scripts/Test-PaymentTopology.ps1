@@ -2,7 +2,8 @@
 param(
     [string]$PrimarySettingsPath,
     [string]$SecondarySettingsPath,
-    [switch]$AllowPending
+    [switch]$AllowPending,
+    [switch]$Detailed
 )
 
 Set-StrictMode -Version Latest
@@ -25,10 +26,33 @@ if ([string]::IsNullOrWhiteSpace($SecondarySettingsPath)) {
     }
 }
 
-Write-Host "=== Node A -> public Bottle ==="
+if ($Detailed) {
+    Write-Host "=== Node A -> public Bottle ==="
+}
+else {
+    Write-Host "Fiber topology health"
+}
 & (Join-Path $PSScriptRoot "Test-FiberNode.ps1") `
-    -SettingsPath $PrimarySettingsPath -AllowPending:$AllowPending
-Write-Host ""
-Write-Host "=== Node B -> node A ==="
+    -SettingsPath $PrimarySettingsPath `
+    -AllowPending:$AllowPending `
+    -Compact:(-not $Detailed) `
+    -Label "A -> Bottle"
+
+if ($Detailed) {
+    Write-Host ""
+    Write-Host "=== Node B -> node A ==="
+}
 & (Join-Path $PSScriptRoot "Test-FiberNode.ps1") `
-    -SettingsPath $SecondarySettingsPath -AllowPending:$AllowPending
+    -SettingsPath $SecondarySettingsPath `
+    -AllowPending:$AllowPending `
+    -Compact:(-not $Detailed) `
+    -Label "B -> A"
+
+if (-not $Detailed) {
+    if ($AllowPending) {
+        Write-Host "Topology check completed (pending allowed)"
+    }
+    else {
+        Write-Host "Topology health passed"
+    }
+}

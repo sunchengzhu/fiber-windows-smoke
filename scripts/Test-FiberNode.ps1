@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$SettingsPath,
-    [switch]$AllowPending
+    [switch]$AllowPending,
+    [switch]$Compact,
+    [string]$Label
 )
 
 Set-StrictMode -Version Latest
@@ -27,35 +29,63 @@ $peers = Invoke-FiberRpc -Settings $settings -Method "list_peers"
 $channels = @(Get-PeerChannels -Settings $settings)
 $readyChannels = @($channels | Where-Object { Test-ChannelReady -Channel $_ })
 
-Write-Host "Fiber node health"
-[pscustomobject]@{
-    Service       = $service.Status
-    Binary        = $binaryVersion
-    RpcVersion    = $nodeInfo.version
-    Commit        = $nodeInfo.commit_hash
-    Pubkey        = $nodeInfo.pubkey
-    CkbAddress    = $ckbAddress
-    ConnectedPeers = @($peers.peers).Count
-    PeerChannels  = $channels.Count
-    ReadyChannels = $readyChannels.Count
-} | Format-List
+if ($Compact) {
+    if ([string]::IsNullOrWhiteSpace($Label)) {
+        $Label = [string]$settings.peer.name
+    }
+    $healthStatus = if ($readyChannels.Count -gt 0) {
+        "OK"
+    }
+    elseif ($AllowPending) {
+        "PENDING"
+    }
+    else {
+        "FAIL"
+    }
+    Write-Host "[$Label] $healthStatus  service=$($service.Status)  fnn=$($nodeInfo.version)  peers=$(@($peers.peers).Count)"
 
-if ($channels.Count -gt 0) {
-    $channelNumber = 0
-    $channels | ForEach-Object {
-        $channelNumber += 1
-        $localBalance = ConvertFrom-HexQuantity -Value ([string]$_.local_balance)
-        $remoteBalance = ConvertFrom-HexQuantity -Value ([string]$_.remote_balance)
-        Write-Host "Channel liquidity #$channelNumber"
-        [pscustomobject]@{
-            State           = Get-ChannelStateName -Channel $_
-            LocalBalanceCkb = (Format-CkbBalance -Shannons $localBalance) + " CKB"
-            RemoteBalanceCkb = (Format-CkbBalance -Shannons $remoteBalance) + " CKB"
-            ChannelId       = $_.channel_id
-            ChannelOutpoint = $_.channel_outpoint
-        } | Format-List
-        Write-Host (Format-FiberLiquidityBar -LocalBalance $localBalance -RemoteBalance $remoteBalance)
-        Write-Host ""
+    if ($channels.Count -gt 0) {
+        $channel = if ($readyChannels.Count -gt 0) { $readyChannels[0] } else { $channels[0] }
+        $localBalance = ConvertFrom-HexQuantity -Value ([string]$channel.local_balance)
+        $remoteBalance = ConvertFrom-HexQuantity -Value ([string]$channel.remote_balance)
+        Write-Host "  $(Get-ChannelStateName -Channel $channel)  local=$(Format-CkbBalance -Shannons $localBalance)  remote=$(Format-CkbBalance -Shannons $remoteBalance) CKB"
+        Write-Host "  $(Format-FiberLiquidityBar -LocalBalance $localBalance -RemoteBalance $remoteBalance -Width 16)"
+    }
+    else {
+        Write-Host "  channel=None"
+    }
+}
+else {
+    Write-Host "Fiber node health"
+    [pscustomobject]@{
+        Service        = $service.Status
+        Binary         = $binaryVersion
+        RpcVersion     = $nodeInfo.version
+        Commit         = $nodeInfo.commit_hash
+        Pubkey         = $nodeInfo.pubkey
+        CkbAddress     = $ckbAddress
+        ConnectedPeers = @($peers.peers).Count
+        PeerChannels   = $channels.Count
+        ReadyChannels  = $readyChannels.Count
+    } | Format-List
+
+    if ($channels.Count -gt 0) {
+        $channelNumber = 0
+        $channels | ForEach-Object {
+            $channelNumber += 1
+            $localBalance = ConvertFrom-HexQuantity -Value ([string]$_.local_balance)
+            $remoteBalance = ConvertFrom-HexQuantity -Value ([string]$_.remote_balance)
+            Write-Host "Channel liquidity #$channelNumber"
+            [pscustomobject]@{
+                State            = Get-ChannelStateName -Channel $_
+                LocalBalanceCkb  = (Format-CkbBalance -Shannons $localBalance) + " CKB"
+                RemoteBalanceCkb = (Format-CkbBalance -Shannons $remoteBalance) + " CKB"
+                ChannelId        = $_.channel_id
+                ChannelOutpoint  = $_.channel_outpoint
+            } | Format-List
+            Write-Host (Format-FiberLiquidityBar -LocalBalance $localBalance -RemoteBalance $remoteBalance)
+            Write-Host ""
+        }
     }
 }
 
@@ -63,8 +93,10 @@ if ($readyChannels.Count -eq 0 -and -not $AllowPending) {
     throw "No ChannelReady channel exists for peer $($settings.peer.pubkey)"
 }
 if ($readyChannels.Count -eq 0) {
-    Write-Warning "No ready channel yet, but -AllowPending was specified"
+    if (-not $Compact) {
+        Write-Warning "No ready channel yet, but -AllowPending was specified"
+    }
 }
-else {
+elseif (-not $Compact) {
     Write-Host "Health check passed"
 }
