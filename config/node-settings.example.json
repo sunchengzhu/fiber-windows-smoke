@@ -1,0 +1,20 @@
+{
+  "installRoot": "C:\\fiber-node",
+  "repository": "nervosnetwork/fiber",
+  "releaseChannel": "prerelease",
+  "releaseTag": "",
+  "serviceName": "FiberNode",
+  "rpcUrl": "http://127.0.0.1:8227",
+  "authTokenFile": "",
+  "peer": {
+    "name": "fiber-testnet-public-bottle",
+    "pubkey": "02b6d4e3ab86a2ca2fad6fae0ecb2e1e559e0b911939872a90abdda6d20302be71",
+    "address": "",
+    "asset": "CKB",
+    "fundingAmountShannons": "49900000000",
+    "fundingFeeRate": "100000",
+    "public": true,
+    "connectTimeoutSeconds": 600,
+    "channelReadyTimeoutSeconds": 1800
+  }
+}

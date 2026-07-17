@@ -1,0 +1,57 @@
+name: Fiber Windows node maintenance
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # 10:00 Asia/Shanghai
+  workflow_dispatch:
+    inputs:
+      ensure_channel:
+        description: "Explicitly open/wait for the configured channel if none exists"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fiber-windows-node-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain-node:
+    runs-on: [self-hosted, windows, x64, fiber-windows]
+    timeout-minutes: 45
+    env:
+      FIBER_WINDOWS_SETTINGS: C:\fiber-node\automation\settings.json
+      GITHUB_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate PowerShell syntax
+        shell: powershell
+        run: tests\Test-PowerShellSyntax.ps1
+
+      - name: Run module unit checks
+        shell: powershell
+        run: tests\Test-Module.ps1
+
+      - name: Update Fiber binary safely
+        shell: powershell
+        run: scripts\Update-FiberBinary.ps1
+
+      - name: Check node and channel
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.ensure_channel }}
+        shell: powershell
+        run: scripts\Test-FiberNode.ps1
+
+      - name: Explicitly ensure channel
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
+        shell: powershell
+        run: scripts\Ensure-Channel.ps1
+
+      - name: Check newly ensured channel
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
+        shell: powershell
+        run: scripts\Test-FiberNode.ps1

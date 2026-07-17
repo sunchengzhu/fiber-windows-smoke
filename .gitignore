@@ -1,0 +1,4 @@
+/config/node-settings.json
+*.log
+.idea/
+.vscode/
