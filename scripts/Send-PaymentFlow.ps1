@@ -121,13 +121,15 @@ $invoicePayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
     -Mode Invoice `
     -AmountCkb $InvoiceAmountCkb `
     -Invoice $invoice `
-    -PassThru
+    -PassThru `
+    -AssertExactDirectBalance
 
 $keysendPayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
     -SettingsPath $PrimarySettingsPath `
     -Mode Keysend `
     -AmountCkb $KeysendAmountCkb `
-    -PassThru
+    -PassThru `
+    -AssertExactDirectBalance
 
 $invoiceLocalBefore = Format-FlowCkb -Shannons $invoicePayment.LocalBefore
 $invoiceLocalAfter = Format-FlowCkb -Shannons $invoicePayment.LocalAfter
@@ -148,11 +150,13 @@ Write-Host "1. Node B -> Node A | Invoice $invoiceAmountDisplay CKB"
 Write-Host "   Node B : $invoiceLocalBefore -> $invoiceLocalAfter CKB"
 Write-Host "   Node A : $invoiceRemoteBefore -> $invoiceRemoteAfter CKB"
 Write-Host "   Fee    : $invoiceFee CKB"
+Write-Host "   Assert : PASSED (exact $invoiceAmountDisplay CKB transfer)"
 Write-Host ""
 Write-Host "2. Node A -> $bottleName | Keysend $keysendAmountDisplay CKB"
 Write-Host "   Node A : $keysendLocalBefore -> $keysendLocalAfter CKB"
 Write-Host "   Bottle : $keysendRemoteBefore -> $keysendRemoteAfter CKB"
 Write-Host "   Fee    : $keysendFee CKB"
+Write-Host "   Assert : PASSED (exact $keysendAmountDisplay CKB transfer)"
 Write-Host ""
 Write-Host "FUNDS FLOW: Node B -- $invoiceAmountDisplay Invoice --> Node A -- $keysendAmountDisplay Keysend --> Bottle"
 
@@ -167,6 +171,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
 - **Node B:** $invoiceLocalBefore &rarr; $invoiceLocalAfter CKB
 - **Node A:** $invoiceRemoteBefore &rarr; $invoiceRemoteAfter CKB
 - **Fee:** $invoiceFee CKB
+- **Assertions:** &#x2705; Exact amount, zero fee, and balance conservation passed
 - **Status:** &#x2705; **Success**
 - **Payment hash:** $($invoicePayment.PaymentHash)
 
@@ -175,6 +180,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
 - **Node A:** $keysendLocalBefore &rarr; $keysendLocalAfter CKB
 - **Bottle:** $keysendRemoteBefore &rarr; $keysendRemoteAfter CKB
 - **Fee:** $keysendFee CKB
+- **Assertions:** &#x2705; Exact amount, zero fee, and balance conservation passed
 - **Status:** &#x2705; **Success**
 - **Payment hash:** $($keysendPayment.PaymentHash)
 "@

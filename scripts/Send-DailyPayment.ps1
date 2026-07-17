@@ -9,7 +9,8 @@ param(
     [string]$InvoiceReceiverAuthTokenFile,
     [int]$TimeoutSeconds = 0,
     [switch]$Scheduled,
-    [switch]$PassThru
+    [switch]$PassThru,
+    [switch]$AssertExactDirectBalance
 )
 
 Set-StrictMode -Version Latest
@@ -114,7 +115,8 @@ function Send-SmokePayment {
         [System.Numerics.BigInteger]$ExpectedAmount,
         [Parameter(Mandatory = $true)]
         [System.Numerics.BigInteger]$MaximumFee,
-        [switch]$ReturnResult
+        [switch]$ReturnResult,
+        [switch]$RequireExactDirectBalance
     )
 
     $channelBefore = Get-ReadyPaymentChannel
@@ -139,6 +141,17 @@ function Send-SmokePayment {
     $localAfter = ConvertFrom-HexQuantity -Value ([string]$channelAfter.local_balance)
     $remoteAfter = ConvertFrom-HexQuantity -Value ([string]$channelAfter.remote_balance)
     $fee = ConvertFrom-HexQuantity -Value ([string]$payment.fee)
+    $balanceAssertion = $null
+    if ($RequireExactDirectBalance) {
+        $balanceAssertion = Assert-FiberDirectPaymentBalance `
+            -Label $Label `
+            -ExpectedAmount $ExpectedAmount `
+            -Fee $fee `
+            -LocalBefore $localBefore `
+            -LocalAfter $localAfter `
+            -RemoteBefore $remoteBefore `
+            -RemoteAfter $remoteAfter
+    }
 
     Write-Host ""
     Write-Host ("=" * 60)
@@ -149,6 +162,9 @@ function Send-SmokePayment {
     Write-Host "Fee          : $(Format-CkbBalance -Shannons $fee) CKB"
     Write-Host "Local        : $(Format-CkbBalance -Shannons $localBefore) -> $(Format-CkbBalance -Shannons $localAfter) CKB"
     Write-Host "Remote       : $(Format-CkbBalance -Shannons $remoteBefore) -> $(Format-CkbBalance -Shannons $remoteAfter) CKB"
+    if ($RequireExactDirectBalance) {
+        Write-Host "Assertions   : PASSED (exact amount, zero fee, balance conserved)"
+    }
     Write-Host (Format-FiberLiquidityBar -LocalBalance $localAfter -RemoteBalance $remoteAfter)
 
     $result = [pscustomobject]@{
@@ -161,6 +177,7 @@ function Send-SmokePayment {
         LocalAfter   = $localAfter
         RemoteBefore = $remoteBefore
         RemoteAfter  = $remoteAfter
+        Assertions   = if ($null -eq $balanceAssertion) { "NotRequested" } else { $balanceAssertion.Status }
     }
     if ($ReturnResult) {
         return $result
@@ -178,7 +195,8 @@ if ($Mode -in @("Keysend", "Both")) {
     }
     Send-SmokePayment -Label "Keysend" -PaymentParams $keysendParams `
         -ExpectedAmount $amountShannons -MaximumFee ([System.Numerics.BigInteger]::Zero) `
-        -ReturnResult:$PassThru
+        -ReturnResult:$PassThru `
+        -RequireExactDirectBalance:$AssertExactDirectBalance
 }
 
 if ($Mode -in @("Invoice", "Both")) {
@@ -224,5 +242,6 @@ if ($Mode -in @("Invoice", "Both")) {
     }
     Send-SmokePayment -Label "Invoice" -PaymentParams $invoiceParams `
         -ExpectedAmount $invoiceAmount -MaximumFee $maxFeeShannons `
-        -ReturnResult:$PassThru
+        -ReturnResult:$PassThru `
+        -RequireExactDirectBalance:$AssertExactDirectBalance
 }
