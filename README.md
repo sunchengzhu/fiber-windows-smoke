@@ -139,7 +139,35 @@ node_info
 .\scripts\Test-FiberNode.ps1 -SettingsPath .\config\node-settings.json -AllowPending
 ```
 
-## 6. 手动测试更新
+## 6. 手动发送一次支付
+
+默认向配置中的 public peer 发送 `0.01 CKB` keysend，并等待支付进入 `Success`：
+
+```powershell
+.\scripts\Send-DailyPayment.ps1
+```
+
+临时指定金额：
+
+```powershell
+.\scripts\Send-DailyPayment.ps1 -AmountCkb 0.1
+```
+
+支付一张由收款节点生成的新 invoice：
+
+```powershell
+.\scripts\Send-DailyPayment.ps1 -Mode Invoice -Invoice "<Fibt invoice>"
+```
+
+若 Windows 能通过内网、VPN 或 SSH 隧道安全访问另一台收款 FNN 的 RPC，可由脚本生成新 invoice 后连续发送 keysend 和 invoice 两笔：
+
+```powershell
+.\scripts\Send-DailyPayment.ps1 -Mode Both -InvoiceReceiverRpcUrl "http://127.0.0.1:8237"
+```
+
+脚本会检查 ready channel 和 local balance，显示 payment hash、fee，以及每笔支付前后的 local/remote CKB 余额。`dailyPayment.mode` 可设为 `Keysend`、`Invoice` 或 `Both`。invoice 每次都必须由收款节点新建，不能重复使用；不要将未鉴权的 FNN RPC 暴露到公网。
+
+## 7. 手动测试更新
 
 ```powershell
 .\scripts\Update-FiberBinary.ps1 -SettingsPath .\config\node-settings.json
@@ -147,7 +175,7 @@ node_info
 
 备份保存在 `C:\fiber-node\backups\<UTC timestamp>-<release tag>`。数据库预检失败意味着目标版本可能要求 migration；脚本会恢复原服务，不会自动修改数据库。
 
-## 7. GitHub Actions
+## 8. GitHub Actions
 
 在这台 Windows 机器上安装 repository-level self-hosted runner，并添加自定义 label：
 
@@ -166,9 +194,10 @@ workflow 每天北京时间 10:00 执行：
 1. PowerShell 语法检查；
 2. 小型模块测试；
 3. 更新或确认 FNN 二进制；
-4. 检查服务、RPC 和 channel。
+4. 检查服务、RPC 和 channel；
+5. 按 `dailyPayment.mode` 执行 keysend、invoice 或两种支付并等待成功。
 
-手动触发 workflow 并勾选 `ensure_channel` 才会执行 `Ensure-Channel.ps1`。定时任务永远不会自动花费链上资金创建新 channel。
+手动触发 workflow 时，`ensure_channel` 控制是否显式确保 channel，`send_payment` 控制是否发送一笔支付。定时任务永远不会自动花费链上资金创建新 channel，但会在已有 channel 上发送配置金额的支付。
 
 后续要改成每小时检查，将 workflow cron 改成：
 

@@ -16,5 +16,14 @@
     "public": true,
     "connectTimeoutSeconds": 600,
     "channelReadyTimeoutSeconds": 1800
+  },
+  "dailyPayment": {
+    "enabled": true,
+    "mode": "Keysend",
+    "amountCkb": "0.01",
+    "maxFeeCkb": "0.001",
+    "timeoutSeconds": 120,
+    "invoiceReceiverRpcUrl": "",
+    "invoiceReceiverAuthTokenFile": ""
   }
 }

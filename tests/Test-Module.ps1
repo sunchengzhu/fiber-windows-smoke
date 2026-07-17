@@ -22,6 +22,9 @@ finally {
 if ((Convert-CkbToShannons -AmountCkb 2000) -ne [System.Numerics.BigInteger]::Parse("200000000000")) {
     throw "Convert-CkbToShannons produced an unexpected amount for 2000 CKB"
 }
+if ((Convert-CkbToShannons -AmountCkb 0.01) -ne [System.Numerics.BigInteger]::Parse("1000000")) {
+    throw "Convert-CkbToShannons produced an unexpected amount for 0.01 CKB"
+}
 if ((Convert-CkbToShannons -AmountCkb 1.00000001) -ne [System.Numerics.BigInteger]::Parse("100000001")) {
     throw "Convert-CkbToShannons did not preserve 8 decimal places"
 }

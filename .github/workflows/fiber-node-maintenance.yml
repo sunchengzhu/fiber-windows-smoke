@@ -10,6 +10,11 @@ on:
         required: false
         default: false
         type: boolean
+      send_payment:
+        description: "Run the configured daily keysend/invoice payment smoke after health checks"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -55,3 +60,13 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
         run: scripts\Test-FiberNode.ps1
+
+      - name: Run scheduled daily payment smoke
+        if: ${{ github.event_name == 'schedule' }}
+        shell: powershell
+        run: scripts\Send-DailyPayment.ps1 -Scheduled
+
+      - name: Run manually requested payment smoke
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_payment }}
+        shell: powershell
+        run: scripts\Send-DailyPayment.ps1
