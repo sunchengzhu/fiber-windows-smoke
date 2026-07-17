@@ -100,7 +100,7 @@ $serviceName = [string]$settings.serviceName
 $serviceXml = @"
 <service>
   <id>$serviceName</id>
-  <name>Fiber Network Node</name>
+  <name>Fiber Network Node ($serviceName)</name>
   <description>Long-running Fiber Network Node managed by fiber-windows-smoke.</description>
   <executable>$escapedFnn</executable>
   <arguments>--config &quot;$escapedConfig&quot; --dir &quot;$escapedData&quot;</arguments>

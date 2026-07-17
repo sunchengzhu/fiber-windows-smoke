@@ -90,6 +90,7 @@ $openParams = @{
     funding_amount  = ConvertTo-HexQuantity -Value $fundingAmount
     funding_fee_rate = ConvertTo-HexQuantity -Value $fundingFeeRate
     public          = [bool]$settings.peer.public
+    one_way         = [bool](Get-ObjectPropertyValue -Object $settings.peer -Name "oneWay" -Default $false)
 }
 
 Write-Warning "Opening a channel locks $fundingAmount shannons on-chain. This call is intentionally never part of the scheduled workflow."

@@ -11,7 +11,7 @@ on:
         default: false
         type: boolean
       send_payment:
-        description: "Run the configured daily keysend/invoice payment smoke after health checks"
+        description: "Run the node B -> node A invoice and node A -> Bottle keysend flow"
         required: false
         default: false
         type: boolean
@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 45
     env:
       FIBER_WINDOWS_SETTINGS: C:\fiber-node\automation\settings.json
+      FIBER_WINDOWS_SECONDARY_SETTINGS: C:\fiber-node-b\automation\settings.json
       GITHUB_TOKEN: ${{ github.token }}
 
     steps:
@@ -42,31 +43,40 @@ jobs:
         shell: powershell
         run: tests\Test-Module.ps1
 
-      - name: Update Fiber binary safely
+      - name: Update node A Fiber binary safely
         shell: powershell
         run: scripts\Update-FiberBinary.ps1
 
-      - name: Check node and channel
+      - name: Update node B Fiber binary safely
+        shell: powershell
+        run: scripts\Update-FiberBinary.ps1 -SettingsPath $env:FIBER_WINDOWS_SECONDARY_SETTINGS
+
+      - name: Check both nodes and channels
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.ensure_channel }}
         shell: powershell
-        run: scripts\Test-FiberNode.ps1
+        run: scripts\Test-PaymentTopology.ps1
 
-      - name: Explicitly ensure channel
+      - name: Explicitly ensure node A public channel
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
         run: scripts\Ensure-Channel.ps1
 
-      - name: Check newly ensured channel
+      - name: Explicitly ensure node B to node A channel
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
-        run: scripts\Test-FiberNode.ps1
+        run: scripts\Ensure-SecondNodeChannel.ps1
 
-      - name: Run scheduled daily payment smoke
+      - name: Check newly ensured channels
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
+        shell: powershell
+        run: scripts\Test-PaymentTopology.ps1
+
+      - name: Run scheduled payment flow
         if: ${{ github.event_name == 'schedule' }}
         shell: powershell
-        run: scripts\Send-DailyPayment.ps1 -Scheduled
+        run: scripts\Send-PaymentFlow.ps1 -Scheduled
 
-      - name: Run manually requested payment smoke
+      - name: Run manually requested payment flow
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_payment }}
         shell: powershell
-        run: scripts\Send-DailyPayment.ps1
+        run: scripts\Send-PaymentFlow.ps1
