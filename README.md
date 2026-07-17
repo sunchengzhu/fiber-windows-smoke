@@ -131,6 +131,8 @@ node_info
 .\scripts\Test-FiberNode.ps1 -SettingsPath .\config\node-settings.json
 ```
 
+健康检查会以 CKB 为单位显示 local/remote 可用余额，并用 ASCII 流动性条直观展示两端占比。
+
 如果正在等待链上确认，可以临时允许 pending：
 
 ```powershell

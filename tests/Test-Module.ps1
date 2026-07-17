@@ -38,6 +38,19 @@ if ((ConvertTo-HexQuantity -Value ([System.Numerics.BigInteger]::Parse("49900000
 if ((ConvertTo-HexQuantity -Value ([System.Numerics.BigInteger]::Zero)) -ne "0x0") {
     throw "ConvertTo-HexQuantity produced an unexpected zero"
 }
+if ((ConvertFrom-HexQuantity -Value "0x2c42d7cd00") -ne [System.Numerics.BigInteger]::Parse("190100000000")) {
+    throw "ConvertFrom-HexQuantity produced an unexpected local balance"
+}
+if ((Format-CkbBalance -Shannons ([System.Numerics.BigInteger]::Parse("190100000000"))) -ne "1901.00000000") {
+    throw "Format-CkbBalance produced an unexpected CKB amount"
+}
+$liquidityBar = Format-FiberLiquidityBar `
+    -LocalBalance ([System.Numerics.BigInteger]::Parse("190100000000")) `
+    -RemoteBalance ([System.Numerics.BigInteger]::Parse("15100000000")) `
+    -Width 20
+if ($liquidityBar -ne "LOCAL 92.64% [###################-] 7.36% REMOTE") {
+    throw "Format-FiberLiquidityBar produced an unexpected visualization: $liquidityBar"
+}
 
 $modernChannel = [pscustomobject]@{
     state = [pscustomobject]@{ state_name = "ChannelReady" }

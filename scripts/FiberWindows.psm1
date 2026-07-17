@@ -144,6 +144,75 @@ function ConvertTo-HexQuantity {
     return "0x$hex"
 }
 
+function ConvertFrom-HexQuantity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    if ($Value.StartsWith("0x", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $hex = $Value.Substring(2)
+        if ([string]::IsNullOrWhiteSpace($hex) -or $hex -notmatch "^[0-9a-fA-F]+$") {
+            throw "Invalid hex quantity: $Value"
+        }
+        return [System.Numerics.BigInteger]::Parse(
+            "0$hex",
+            [System.Globalization.NumberStyles]::AllowHexSpecifier,
+            [System.Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+    return [System.Numerics.BigInteger]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Format-CkbBalance {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$Shannons
+    )
+
+    if ($Shannons -lt [System.Numerics.BigInteger]::Zero) {
+        throw "CKB balance cannot be negative"
+    }
+    $shannonsPerCkb = [System.Numerics.BigInteger]::Parse("100000000")
+    $wholeCkb = [System.Numerics.BigInteger]::Divide($Shannons, $shannonsPerCkb)
+    $fractionalShannons = [System.Numerics.BigInteger]::Remainder($Shannons, $shannonsPerCkb)
+    return $wholeCkb.ToString([System.Globalization.CultureInfo]::InvariantCulture) + "." +
+        $fractionalShannons.ToString("D8", [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Format-FiberLiquidityBar {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$LocalBalance,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$RemoteBalance,
+        [int]$Width = 24
+    )
+
+    if ($LocalBalance -lt [System.Numerics.BigInteger]::Zero -or $RemoteBalance -lt [System.Numerics.BigInteger]::Zero) {
+        throw "Channel balances cannot be negative"
+    }
+    if ($Width -lt 4) {
+        throw "Liquidity bar width must be at least 4"
+    }
+
+    $totalBalance = $LocalBalance + $RemoteBalance
+    if ($totalBalance -eq [System.Numerics.BigInteger]::Zero) {
+        return "LOCAL 0.00% [" + ("-" * $Width) + "] 0.00% REMOTE"
+    }
+
+    $localSegments = [int][System.Numerics.BigInteger]::Divide(
+        ($LocalBalance * $Width) + [System.Numerics.BigInteger]::Divide($totalBalance, 2),
+        $totalBalance
+    )
+    $localSegments = [Math]::Max(0, [Math]::Min($Width, $localSegments))
+    $localPercent = ([decimal]$LocalBalance * [decimal]100) / [decimal]$totalBalance
+    $remotePercent = [decimal]100 - $localPercent
+    $bar = ("#" * $localSegments) + ("-" * ($Width - $localSegments))
+    return "LOCAL $($localPercent.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture))% " +
+        "[$bar] $($remotePercent.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture))% REMOTE"
+}
+
 function Convert-CkbToShannons {
     param(
         [Parameter(Mandatory = $true)]
@@ -539,8 +608,11 @@ function Start-FiberService {
 
 Export-ModuleMember -Function @(
     "Convert-CkbToShannons",
+    "ConvertFrom-HexQuantity",
     "ConvertTo-HexQuantity",
     "ConvertTo-CkbAddress",
+    "Format-CkbBalance",
+    "Format-FiberLiquidityBar",
     "Get-ChannelStateName",
     "Get-ExecutableVersion",
     "Get-FiberPaths",

@@ -41,15 +41,22 @@ Write-Host "Fiber node health"
 } | Format-List
 
 if ($channels.Count -gt 0) {
+    $channelNumber = 0
     $channels | ForEach-Object {
+        $channelNumber += 1
+        $localBalance = ConvertFrom-HexQuantity -Value ([string]$_.local_balance)
+        $remoteBalance = ConvertFrom-HexQuantity -Value ([string]$_.remote_balance)
+        Write-Host "Channel liquidity #$channelNumber"
         [pscustomobject]@{
-            ChannelId     = $_.channel_id
-            State         = Get-ChannelStateName -Channel $_
+            State           = Get-ChannelStateName -Channel $_
+            LocalBalanceCkb = (Format-CkbBalance -Shannons $localBalance) + " CKB"
+            RemoteBalanceCkb = (Format-CkbBalance -Shannons $remoteBalance) + " CKB"
+            ChannelId       = $_.channel_id
             ChannelOutpoint = $_.channel_outpoint
-            LocalBalance  = $_.local_balance
-            RemoteBalance = $_.remote_balance
-        }
-    } | Format-Table -AutoSize
+        } | Format-List
+        Write-Host (Format-FiberLiquidityBar -LocalBalance $localBalance -RemoteBalance $remoteBalance)
+        Write-Host ""
+    }
 }
 
 if ($readyChannels.Count -eq 0 -and -not $AllowPending) {
