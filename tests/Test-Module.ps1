@@ -6,6 +6,19 @@ $ErrorActionPreference = "Stop"
 
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) "scripts\FiberWindows.psm1") -Force
 
+$originalProcessWorkingDirectory = [Environment]::CurrentDirectory
+try {
+    [Environment]::CurrentDirectory = [System.IO.Path]::GetTempPath()
+    $expectedSettingsPath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).ProviderPath "config\node-settings.json"))
+    $resolvedSettingsPath = Resolve-FiberSettingsPath -SettingsPath ".\config\node-settings.json" -ScriptRoot $PSScriptRoot
+    if (-not [string]::Equals($resolvedSettingsPath, $expectedSettingsPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Resolve-FiberSettingsPath used the process working directory instead of the PowerShell location: $resolvedSettingsPath"
+    }
+}
+finally {
+    [Environment]::CurrentDirectory = $originalProcessWorkingDirectory
+}
+
 if ((ConvertTo-HexQuantity -Value ([System.Numerics.BigInteger]::Parse("49900000000"))) -ne "0xb9e459300") {
     throw "ConvertTo-HexQuantity produced an unexpected funding amount"
 }

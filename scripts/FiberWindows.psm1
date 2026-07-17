@@ -31,7 +31,15 @@ function Resolve-FiberSettingsPath {
             $SettingsPath = Join-Path (Split-Path -Parent $ScriptRoot) "config\node-settings.json"
         }
     }
-    return [System.IO.Path]::GetFullPath($SettingsPath)
+    if ([System.IO.Path]::IsPathRooted($SettingsPath)) {
+        return [System.IO.Path]::GetFullPath($SettingsPath)
+    }
+
+    # PowerShell's current location can differ from the process working directory.
+    # This commonly happens in an elevated shell, where .NET still reports
+    # C:\Windows\System32 even after Set-Location changes the PowerShell location.
+    $powerShellWorkingDirectory = (Get-Location).ProviderPath
+    return [System.IO.Path]::GetFullPath((Join-Path $powerShellWorkingDirectory $SettingsPath))
 }
 
 function Import-FiberSettings {
