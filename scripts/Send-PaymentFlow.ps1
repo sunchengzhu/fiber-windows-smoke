@@ -158,24 +158,24 @@ Write-Host "FUNDS FLOW: Node B -- $invoiceAmountDisplay Invoice --> Node A -- $k
 
 if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
     $summary = @"
-## Payment flow result
+## Actual payment result
 
-> **Node B** -- **$invoiceAmountDisplay CKB Invoice** --> **Node A** -- **$keysendAmountDisplay CKB Keysend** --> **Bottle**
+> **Node B** -- Invoice **$invoiceAmountDisplay CKB** &rarr; **Node A** -- Keysend **$keysendAmountDisplay CKB** &rarr; **Bottle**
 
-### 1. Node B -> Node A - Invoice ($invoiceAmountDisplay CKB)
+### 1. Invoice: Node B &rarr; Node A ($invoiceAmountDisplay CKB)
 
-- **Node B:** $invoiceLocalBefore -> $invoiceLocalAfter CKB
-- **Node A:** $invoiceRemoteBefore -> $invoiceRemoteAfter CKB
+- **Node B:** $invoiceLocalBefore &rarr; $invoiceLocalAfter CKB
+- **Node A:** $invoiceRemoteBefore &rarr; $invoiceRemoteAfter CKB
 - **Fee:** $invoiceFee CKB
-- **Status:** **Success**
+- **Status:** &#x2705; **Success**
 - **Payment hash:** $($invoicePayment.PaymentHash)
 
-### 2. Node A -> Bottle - Keysend ($keysendAmountDisplay CKB)
+### 2. Keysend: Node A &rarr; Bottle ($keysendAmountDisplay CKB)
 
-- **Node A:** $keysendLocalBefore -> $keysendLocalAfter CKB
-- **Bottle:** $keysendRemoteBefore -> $keysendRemoteAfter CKB
+- **Node A:** $keysendLocalBefore &rarr; $keysendLocalAfter CKB
+- **Bottle:** $keysendRemoteBefore &rarr; $keysendRemoteAfter CKB
 - **Fee:** $keysendFee CKB
-- **Status:** **Success**
+- **Status:** &#x2705; **Success**
 - **Payment hash:** $($keysendPayment.PaymentHash)
 "@
     $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
