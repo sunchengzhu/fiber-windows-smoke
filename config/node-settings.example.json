@@ -5,6 +5,8 @@
   "releaseTag": "",
   "serviceName": "FiberNode",
   "rpcUrl": "http://127.0.0.1:8227",
+  "rpcListeningAddress": "127.0.0.1:8227",
+  "p2pListeningAddress": "/ip4/127.0.0.1/tcp/8228",
   "authTokenFile": "",
   "peer": {
     "name": "fiber-testnet-public-bottle",
@@ -14,7 +16,22 @@
     "fundingAmountShannons": "49900000000",
     "fundingFeeRate": "100000",
     "public": true,
+    "oneWay": false,
     "connectTimeoutSeconds": 600,
     "channelReadyTimeoutSeconds": 1800
+  },
+  "dailyPayment": {
+    "enabled": true,
+    "mode": "Keysend",
+    "amountCkb": "0.01",
+    "maxFeeCkb": "0.001",
+    "timeoutSeconds": 120,
+    "invoiceReceiverRpcUrl": "",
+    "invoiceReceiverAuthTokenFile": ""
+  },
+  "paymentFlow": {
+    "enabled": true,
+    "invoiceAmountCkb": "0.02",
+    "keysendAmountCkb": "0.01"
   }
 }

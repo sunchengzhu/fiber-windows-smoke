@@ -1,6 +1,6 @@
 # Fiber Windows Smoke
 
-在一台长期在线的 Windows x64 机器上运行 Fiber testnet 节点，安全更新 FNN，建立一条 CKB channel，并持续检查节点和 channel 状态。
+在一台长期在线的 Windows x64 机器上运行两个 Fiber testnet 节点，安全更新 FNN，维护两条 CKB channel，并持续执行 invoice 与 keysend 支付检查。
 
 这个项目参考 `fiber-jmeter-sample` 的部署顺序，但针对单台 Windows 机器做了以下调整：
 
@@ -14,7 +14,20 @@
 
 ## 默认拓扑
 
-默认配置使用 testnet、CKB channel 和官方 public node `fiber-testnet-public-bottle`：
+节点 A 是已经安装的 `FiberNode`，保留它到官方 public node `fiber-testnet-public-bottle` 的现有 channel。节点 B 是同一台 Windows 上新增的 `FiberNodeB`：
+
+```text
+node B -- invoice payment 0.02 CKB --> node A -- keysend 0.01 CKB --> Bottle
+```
+
+两套节点完全隔离：
+
+| 节点 | 服务 | 目录 | RPC | P2P |
+| --- | --- | --- | --- | --- |
+| A | `FiberNode` | `C:\fiber-node` | `127.0.0.1:8227` | `127.0.0.1:8228` |
+| B | `FiberNodeB` | `C:\fiber-node-b` | `127.0.0.1:8327` | `127.0.0.1:8328` |
+
+节点 A 的 public peer 配置：
 
 - peer pubkey: `02b6d4e3ab86a2ca2fad6fae0ecb2e1e559e0b911939872a90abdda6d20302be71`
 - funding amount: `499 CKB`，即 `49,900,000,000` shannons
@@ -31,6 +44,10 @@
 | `scripts/Install-FiberService.ps1` | 首次下载 FNN、生成 CKB key、安装 WinSW 服务并启动节点 |
 | `scripts/Update-FiberBinary.ps1` | 检查 release、校验下载、数据库预检、备份、更新和回滚 |
 | `scripts/Ensure-Channel.ps1` | 连接 peer，幂等创建 channel，等待 `ChannelReady` |
+| `scripts/Install-SecondNode.ps1` | 保留节点 A，在同一台 Windows 上安装独立节点 B |
+| `scripts/Ensure-SecondNodeChannel.ps1` | 由节点 B 出资 5000 CKB，建立 B→A channel |
+| `scripts/Send-PaymentFlow.ps1` | A 生成 invoice、B 支付 0.02 CKB，再由 A keysend 0.01 CKB 到 Bottle |
+| `scripts/Test-PaymentTopology.ps1` | 一条命令检查两个服务和两条 channel |
 | `scripts/Test-FiberNode.ps1` | 检查服务、RPC、版本、peer 和 ready channel |
 | `config/node-settings.example.json` | Windows 机器配置模板 |
 
@@ -85,7 +102,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 5. 将 P2P 改成 outbound-only，并保留 RPC 的 localhost 绑定。
 6. 生成新的 CKB private key。
 7. 下载并校验固定版本的 WinSW 2.12.0。
-8. 询问至少 12 字符的 key 加密密码。
+8. 要求输入并确认至少 12 字符的 key 加密密码。
 9. 以 `LocalSystem` 安装自动启动的 `FiberNode` 服务。
 10. 等待 RPC 健康并打印 pubkey 与 CKB address。
 
@@ -108,8 +125,10 @@ WinSW XML 必须保存 FNN 启动所需的 key password。脚本会用 Windows A
 首次显式执行：
 
 ```powershell
-.\scripts\Ensure-Channel.ps1 -SettingsPath .\config\node-settings.json
+.\scripts\Ensure-Channel.ps1 -FundingAmountCkb 2000
 ```
+
+`FundingAmountCkb` 使用直观的 CKB 单位；脚本会换算成 shannons、同步机器运行配置，然后开通 channel。省略该参数时使用 `node-settings.json` 中已有的金额。
 
 流程是：
 
@@ -129,13 +148,90 @@ node_info
 .\scripts\Test-FiberNode.ps1 -SettingsPath .\config\node-settings.json
 ```
 
+健康检查会以 CKB 为单位显示 local/remote 可用余额，并用 ASCII 流动性条和四位小数百分比展示两端占比，避免小额余额被显示成 `100% / 0%`。
+
 如果正在等待链上确认，可以临时允许 pending：
 
 ```powershell
 .\scripts\Test-FiberNode.ps1 -SettingsPath .\config\node-settings.json -AllowPending
 ```
 
-## 6. 手动测试更新
+## 6. 安装节点 B
+
+不要删除或重装现有节点 A。它的服务、密钥、数据和到 Bottle 的 channel 都会原样保留。
+
+管理员 PowerShell：
+
+```powershell
+.\scripts\Install-SecondNode.ps1
+```
+
+脚本自动读取节点 A 的 pubkey，生成 `config\node-b-settings.json`，然后安装独立的 `FiberNodeB`。输入并确认节点 B 自己的密钥密码。安装结束会打印节点 B 的 CKB 地址。
+
+向节点 B 地址充值约 `5500 CKB`，等待链上确认，然后执行：
+
+```powershell
+.\scripts\Ensure-SecondNodeChannel.ps1
+```
+
+该命令只在 B→A channel 不存在时开通 `5000 CKB` 的 private one-way channel：B 可以向 A 支付，A 不能在这条 channel 上反向支付。重复执行不会重复锁定资金。检查完整拓扑：
+
+```powershell
+.\scripts\Test-PaymentTopology.ps1
+```
+
+默认使用紧凑模式，只显示两个节点的服务、版本、peer 数、Channel 状态、余额和占比，整个结果约 8 行。排查问题时可以查看 pubkey、CKB 地址和 Channel ID 等完整信息：
+
+```powershell
+.\scripts\Test-PaymentTopology.ps1 -Detailed
+```
+
+## 7. 手动执行完整资金流
+
+```powershell
+.\scripts\Send-PaymentFlow.ps1
+```
+
+每次运行严格执行两笔不同金额的支付：
+
+1. 节点 A 调用 `new_invoice` 生成 `0.02 CKB` invoice，节点 B 支付给 A；
+2. 节点 A 向 Bottle keysend `0.01 CKB`。
+
+脚本逐笔等待 `Success`，并显示支付前后的 channel 两端 CKB 余额。临时覆盖金额时可执行：
+
+```powershell
+.\scripts\Send-PaymentFlow.ps1 -InvoiceAmountCkb 0.02 -KeysendAmountCkb 0.01
+```
+
+## 8. 单独调试一种支付
+
+默认向配置中的 public peer 发送 `0.01 CKB` keysend，并等待支付进入 `Success`：
+
+```powershell
+.\scripts\Send-DailyPayment.ps1
+```
+
+临时指定金额：
+
+```powershell
+.\scripts\Send-DailyPayment.ps1 -AmountCkb 0.1
+```
+
+支付一张由收款节点生成的新 invoice：
+
+```powershell
+.\scripts\Send-DailyPayment.ps1 -Mode Invoice -Invoice "<Fibt invoice>"
+```
+
+若 Windows 能通过内网、VPN 或 SSH 隧道安全访问另一台收款 FNN 的 RPC，可由脚本生成新 invoice 后连续发送 keysend 和 invoice 两笔：
+
+```powershell
+.\scripts\Send-DailyPayment.ps1 -Mode Both -InvoiceReceiverRpcUrl "http://127.0.0.1:8237"
+```
+
+脚本会检查 ready channel 和 local balance，显示 payment hash、fee，以及每笔支付前后的 local/remote CKB 余额。`dailyPayment.mode` 可设为 `Keysend`、`Invoice` 或 `Both`。invoice 每次都必须由收款节点新建，不能重复使用；不要将未鉴权的 FNN RPC 暴露到公网。
+
+## 9. 手动测试更新
 
 ```powershell
 .\scripts\Update-FiberBinary.ps1 -SettingsPath .\config\node-settings.json
@@ -143,7 +239,7 @@ node_info
 
 备份保存在 `C:\fiber-node\backups\<UTC timestamp>-<release tag>`。数据库预检失败意味着目标版本可能要求 migration；脚本会恢复原服务，不会自动修改数据库。
 
-## 7. GitHub Actions
+## 10. GitHub Actions
 
 在这台 Windows 机器上安装 repository-level self-hosted runner，并添加自定义 label：
 
@@ -157,14 +253,15 @@ fiber-windows
 C:\fiber-node\automation\settings.json
 ```
 
-workflow 每天北京时间 10:00 执行：
+workflow 每天北京时间 08:01 执行（GitHub Actions cron 使用 UTC，因此配置为当天 `00:01 UTC`）：
 
 1. PowerShell 语法检查；
 2. 小型模块测试；
-3. 更新或确认 FNN 二进制；
-4. 检查服务、RPC 和 channel。
+3. 分别更新或确认节点 A、B 的 FNN 二进制；
+4. 检查两个服务、RPC 和两条 channel；
+5. 执行 B→A `0.02 CKB` invoice 支付和 A→Bottle `0.01 CKB` keysend，并等待两笔成功。
 
-手动触发 workflow 并勾选 `ensure_channel` 才会执行 `Ensure-Channel.ps1`。定时任务永远不会自动花费链上资金创建新 channel。
+手动触发 workflow 时，`ensure_channel` 控制是否显式确保两条 channel，`send_payment` 控制是否执行完整支付流。定时任务永远不会自动花费链上资金创建新 channel，但会在已有 channel 上发送配置金额的支付。
 
 后续要改成每小时检查，将 workflow cron 改成：
 

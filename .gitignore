@@ -1,4 +1,5 @@
 /config/node-settings.json
+/config/node-b-settings.json
 *.log
 .idea/
 .vscode/

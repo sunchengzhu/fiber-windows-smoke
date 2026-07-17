@@ -65,11 +65,20 @@ try {
         }
         Copy-Item -LiteralPath $packagedConfig -Destination $paths.Config
 
-        # Default to an outbound-only client node. RPC and P2P are not exposed publicly.
+        # Keep every managed node on its configured localhost-only RPC/P2P ports. This
+        # also lets node A and node B run on the same Windows machine without clashes.
+        $p2pListeningAddress = [string](Get-ObjectPropertyValue `
+            -Object $settings -Name "p2pListeningAddress" -Default "/ip4/127.0.0.1/tcp/8228")
+        $rpcListeningAddress = [string](Get-ObjectPropertyValue `
+            -Object $settings -Name "rpcListeningAddress" -Default "127.0.0.1:8227")
         $configText = Get-Content -LiteralPath $paths.Config -Raw
         $configText = $configText.Replace(
             'listening_addr: "/ip4/0.0.0.0/tcp/8228"',
-            'listening_addr: "/ip4/127.0.0.1/tcp/8228"'
+            "listening_addr: `"$p2pListeningAddress`""
+        )
+        $configText = $configText.Replace(
+            'listening_addr: "127.0.0.1:8227"',
+            "listening_addr: `"$rpcListeningAddress`""
         )
         $configText = $configText.Replace("announce_listening_addr: true", "announce_listening_addr: false")
         Set-Content -LiteralPath $paths.Config -Value $configText -Encoding UTF8

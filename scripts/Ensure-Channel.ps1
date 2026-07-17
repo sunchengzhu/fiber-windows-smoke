@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$SettingsPath,
-    [int]$TimeoutSeconds = 0
+    [int]$TimeoutSeconds = 0,
+    [decimal]$FundingAmountCkb
 )
 
 Set-StrictMode -Version Latest
@@ -64,17 +65,53 @@ if (-not $connected) {
     throw "Unable to connect peer within $connectTimeout seconds. Set peer.address explicitly if gossip has not learned the address. Last error: $lastConnectError"
 }
 
-$fundingAmount = [System.Numerics.BigInteger]::Parse([string]$settings.peer.fundingAmountShannons)
+$hasFundingAmountOverride = $PSBoundParameters.ContainsKey("FundingAmountCkb")
+if ($hasFundingAmountOverride) {
+    $fundingAmount = Convert-CkbToShannons -AmountCkb $FundingAmountCkb
+    $settings.peer.fundingAmountShannons = $fundingAmount.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+
+    $settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $SettingsPath -Encoding UTF8
+    $paths = Get-FiberPaths -Settings $settings
+    if (-not [string]::Equals(
+        [System.IO.Path]::GetFullPath($SettingsPath),
+        [System.IO.Path]::GetFullPath($paths.RuntimeConfig),
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        Copy-Item -LiteralPath $SettingsPath -Destination $paths.RuntimeConfig -Force
+    }
+    Write-Host "Saved channel funding amount: $FundingAmountCkb CKB ($fundingAmount shannons)"
+}
+else {
+    $fundingAmount = [System.Numerics.BigInteger]::Parse([string]$settings.peer.fundingAmountShannons)
+}
 $fundingFeeRate = [System.Numerics.BigInteger]::Parse([string]$settings.peer.fundingFeeRate)
 $openParams = @{
     pubkey          = [string]$settings.peer.pubkey
     funding_amount  = ConvertTo-HexQuantity -Value $fundingAmount
     funding_fee_rate = ConvertTo-HexQuantity -Value $fundingFeeRate
     public          = [bool]$settings.peer.public
+    one_way         = [bool](Get-ObjectPropertyValue -Object $settings.peer -Name "oneWay" -Default $false)
 }
 
-Write-Warning "Opening a channel locks $($settings.peer.fundingAmountShannons) shannons on-chain. This call is intentionally never part of the scheduled workflow."
-$openResult = Invoke-FiberRpc -Settings $settings -Method "open_channel" -Params @($openParams) -TimeoutSeconds 60
+Write-Warning "Opening a channel locks $fundingAmount shannons on-chain. This call is intentionally never part of the scheduled workflow."
+$openDeadline = [DateTime]::UtcNow.AddSeconds($connectTimeout)
+$openResult = $null
+while ($null -eq $openResult) {
+    try {
+        $openResult = Invoke-FiberRpc -Settings $settings -Method "open_channel" -Params @($openParams) -TimeoutSeconds 60
+    }
+    catch {
+        $openError = $_.Exception.Message
+        if (-not (Test-FiberPeerInitPendingError -Message $openError)) {
+            throw
+        }
+        if ([DateTime]::UtcNow -ge $openDeadline) {
+            throw "Peer connected but did not finish the Fiber Init handshake within $connectTimeout seconds. Last error: $openError"
+        }
+        Write-Host "Peer connected; waiting for the Fiber Init handshake before opening the channel"
+        Start-Sleep -Seconds 2
+    }
+}
 Write-Host "open_channel accepted: temporary_channel_id=$($openResult.temporary_channel_id)"
 
 $channel = Wait-PeerChannelReady -Settings $settings -TimeoutSeconds $TimeoutSeconds
