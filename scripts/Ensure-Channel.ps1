@@ -93,7 +93,24 @@ $openParams = @{
 }
 
 Write-Warning "Opening a channel locks $fundingAmount shannons on-chain. This call is intentionally never part of the scheduled workflow."
-$openResult = Invoke-FiberRpc -Settings $settings -Method "open_channel" -Params @($openParams) -TimeoutSeconds 60
+$openDeadline = [DateTime]::UtcNow.AddSeconds($connectTimeout)
+$openResult = $null
+while ($null -eq $openResult) {
+    try {
+        $openResult = Invoke-FiberRpc -Settings $settings -Method "open_channel" -Params @($openParams) -TimeoutSeconds 60
+    }
+    catch {
+        $openError = $_.Exception.Message
+        if (-not (Test-FiberPeerInitPendingError -Message $openError)) {
+            throw
+        }
+        if ([DateTime]::UtcNow -ge $openDeadline) {
+            throw "Peer connected but did not finish the Fiber Init handshake within $connectTimeout seconds. Last error: $openError"
+        }
+        Write-Host "Peer connected; waiting for the Fiber Init handshake before opening the channel"
+        Start-Sleep -Seconds 2
+    }
+}
 Write-Host "open_channel accepted: temporary_channel_id=$($openResult.temporary_channel_id)"
 
 $channel = Wait-PeerChannelReady -Settings $settings -TimeoutSeconds $TimeoutSeconds

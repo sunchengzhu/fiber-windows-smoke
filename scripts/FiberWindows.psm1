@@ -162,6 +162,16 @@ function Convert-CkbToShannons {
     )
 }
 
+function Test-FiberPeerInitPendingError {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    return $Message.Contains("feature not found") -and
+        $Message.Contains("waiting for peer to send Init message")
+}
+
 function Get-FiberAuthHeaders {
     param(
         [Parameter(Mandatory = $true)]
@@ -545,6 +555,7 @@ Export-ModuleMember -Function @(
     "Start-FiberService",
     "Stop-FiberService",
     "Test-ChannelReady",
+    "Test-FiberPeerInitPendingError",
     "Wait-FiberRpc",
     "Wait-PeerChannelReady"
 )

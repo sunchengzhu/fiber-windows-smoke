@@ -25,6 +25,12 @@ if ((Convert-CkbToShannons -AmountCkb 2000) -ne [System.Numerics.BigInteger]::Pa
 if ((Convert-CkbToShannons -AmountCkb 1.00000001) -ne [System.Numerics.BigInteger]::Parse("100000001")) {
     throw "Convert-CkbToShannons did not preserve 8 decimal places"
 }
+if (-not (Test-FiberPeerInitPendingError -Message "Peer Pubkey(02ab)'s feature not found, waiting for peer to send Init message")) {
+    throw "Test-FiberPeerInitPendingError rejected the transient Fiber Init error"
+}
+if (Test-FiberPeerInitPendingError -Message "Insufficient CKB balance") {
+    throw "Test-FiberPeerInitPendingError accepted an unrelated error"
+}
 
 if ((ConvertTo-HexQuantity -Value ([System.Numerics.BigInteger]::Parse("49900000000"))) -ne "0xb9e459300") {
     throw "ConvertTo-HexQuantity produced an unexpected funding amount"
