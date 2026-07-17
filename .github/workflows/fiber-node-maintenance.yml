@@ -2,7 +2,7 @@ name: Fiber Windows node maintenance
 
 on:
   schedule:
-    - cron: "0 23 * * *" # 07:00 Asia/Shanghai (UTC+8)
+    - cron: "1 0 * * *" # 08:01 Asia/Shanghai (UTC+8)
   workflow_dispatch:
     inputs:
       ensure_channel:
