@@ -126,7 +126,6 @@ function Send-SmokePayment {
         throw "Insufficient local balance for $Label payment and fee allowance"
     }
 
-    Write-Host ""
     Write-Host ("=" * 60)
     Write-Host "$($Label.ToUpperInvariant()) - BEFORE"
     Write-Host ("=" * 60)
@@ -134,6 +133,7 @@ function Send-SmokePayment {
     Write-Host "Local  : $(Format-CkbBalance -Shannons $localBefore) CKB"
     Write-Host "Remote : $(Format-CkbBalance -Shannons $remoteBefore) CKB"
     Write-Host (Format-FiberLiquidityBar -LocalBalance $localBefore -RemoteBalance $remoteBefore)
+    Write-Host ""
 
     $initialPayment = Invoke-FiberRpc -Settings $settings -Method "send_payment" -Params @($PaymentParams) -TimeoutSeconds 60
     $payment = Wait-PaymentSuccess -InitialPayment $initialPayment
@@ -166,6 +166,7 @@ function Send-SmokePayment {
         Write-Host "Assertions   : PASSED (exact amount, zero fee, balance conserved)"
     }
     Write-Host (Format-FiberLiquidityBar -LocalBalance $localAfter -RemoteBalance $remoteAfter)
+    Write-Host ""
 
     $result = [pscustomobject]@{
         Label        = $Label

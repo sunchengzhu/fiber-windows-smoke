@@ -102,6 +102,7 @@ Write-Host "Node B -- $invoiceAmountDisplay CKB Invoice --> Node A"
 Write-Host "Node A -- $keysendAmountDisplay CKB Keysend --> $bottleName"
 Write-Host "Node A: $($primaryInfo.pubkey)"
 Write-Host "Node B: $($secondaryInfo.pubkey)"
+Write-Host ""
 
 $invoiceResult = Invoke-FiberRpc -Settings $primarySettings -Method "new_invoice" -Params @(@{
     amount         = ConvertTo-HexQuantity -Value $invoiceAmount
@@ -142,10 +143,10 @@ $keysendRemoteBefore = Format-FlowCkb -Shannons $keysendPayment.RemoteBefore
 $keysendRemoteAfter = Format-FlowCkb -Shannons $keysendPayment.RemoteAfter
 $keysendFee = Format-FlowCkb -Shannons $keysendPayment.Fee
 
-Write-Host ""
 Write-Host ("=" * 60)
 Write-Host "PAYMENT FLOW RESULT - SUCCESS"
 Write-Host ("=" * 60)
+Write-Host ""
 Write-Host "1. Node B -> Node A | Invoice $invoiceAmountDisplay CKB"
 Write-Host "   Node B : $invoiceLocalBefore -> $invoiceLocalAfter CKB"
 Write-Host "   Node A : $invoiceRemoteBefore -> $invoiceRemoteAfter CKB"
@@ -159,6 +160,7 @@ Write-Host "   Fee    : $keysendFee CKB"
 Write-Host "   Assert : PASSED (exact $keysendAmountDisplay CKB transfer)"
 Write-Host ""
 Write-Host "FUNDS FLOW: Node B -- $invoiceAmountDisplay Invoice --> Node A -- $keysendAmountDisplay Keysend --> Bottle"
+Write-Host ""
 
 if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
     $summary = @"
