@@ -32,6 +32,8 @@
   "paymentFlow": {
     "enabled": true,
     "invoiceAmountCkb": "0.02",
-    "keysendAmountCkb": "0.01"
+    "keysendAmountCkb": "0.01",
+    "routedKeysendAmountCkb": "0.03",
+    "routedMaxFeeCkb": "0.001"
   }
 }

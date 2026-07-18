@@ -120,6 +120,55 @@ Assert-ActionFails -ExpectedMessage "fee assertion failed" -Action {
         -RemoteAfter ([System.Numerics.BigInteger]::Parse("15104000000"))
 }
 
+$calculatedRoutingFee = Get-FiberForwardingFee `
+    -Amount ([System.Numerics.BigInteger]::Parse("3000000")) `
+    -FeeRateMillionths ([System.Numerics.BigInteger]::Parse("1000"))
+if ($calculatedRoutingFee -ne [System.Numerics.BigInteger]::Parse("3000")) {
+    throw "Forwarding fee calculation did not produce 3000 shannons for 0.03 CKB at 1000 millionths"
+}
+$roundedRoutingFee = Get-FiberForwardingFee `
+    -Amount ([System.Numerics.BigInteger]::One) `
+    -FeeRateMillionths ([System.Numerics.BigInteger]::One)
+if ($roundedRoutingFee -ne [System.Numerics.BigInteger]::One) {
+    throw "Forwarding fee calculation did not round a fractional shannon up"
+}
+
+$routedPaymentAssertion = Assert-FiberRoutedPaymentBalance `
+    -Label "Routed keysend" `
+    -ExpectedAmount ([System.Numerics.BigInteger]::Parse("3000000")) `
+    -ExpectedFee ([System.Numerics.BigInteger]::Parse("3000")) `
+    -ActualFee ([System.Numerics.BigInteger]::Parse("3000")) `
+    -LocalBefore ([System.Numerics.BigInteger]::Parse("490090000000")) `
+    -LocalAfter ([System.Numerics.BigInteger]::Parse("490086997000")) `
+    -RemoteBefore ([System.Numerics.BigInteger]::Parse("10000000")) `
+    -RemoteAfter ([System.Numerics.BigInteger]::Parse("13003000"))
+if ($routedPaymentAssertion.Status -ne "Passed") {
+    throw "Exact routed payment balance assertion did not pass"
+}
+
+Assert-ActionFails -ExpectedMessage "routing fee assertion failed" -Action {
+    Assert-FiberRoutedPaymentBalance `
+        -Label "Routed keysend" `
+        -ExpectedAmount ([System.Numerics.BigInteger]::Parse("3000000")) `
+        -ExpectedFee ([System.Numerics.BigInteger]::Parse("3000")) `
+        -ActualFee ([System.Numerics.BigInteger]::Parse("2999")) `
+        -LocalBefore ([System.Numerics.BigInteger]::Parse("490090000000")) `
+        -LocalAfter ([System.Numerics.BigInteger]::Parse("490086997000")) `
+        -RemoteBefore ([System.Numerics.BigInteger]::Parse("10000000")) `
+        -RemoteAfter ([System.Numerics.BigInteger]::Parse("13003000"))
+}
+Assert-ActionFails -ExpectedMessage "first-hop local balance assertion failed" -Action {
+    Assert-FiberRoutedPaymentBalance `
+        -Label "Routed keysend" `
+        -ExpectedAmount ([System.Numerics.BigInteger]::Parse("3000000")) `
+        -ExpectedFee ([System.Numerics.BigInteger]::Parse("3000")) `
+        -ActualFee ([System.Numerics.BigInteger]::Parse("3000")) `
+        -LocalBefore ([System.Numerics.BigInteger]::Parse("490090000000")) `
+        -LocalAfter ([System.Numerics.BigInteger]::Parse("490086997001")) `
+        -RemoteBefore ([System.Numerics.BigInteger]::Parse("10000000")) `
+        -RemoteAfter ([System.Numerics.BigInteger]::Parse("13003000"))
+}
+
 $liquidityBar = Format-FiberLiquidityBar `
     -LocalBalance ([System.Numerics.BigInteger]::Parse("190100000000")) `
     -RemoteBalance ([System.Numerics.BigInteger]::Parse("15100000000")) `

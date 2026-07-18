@@ -225,6 +225,76 @@ function Assert-FiberDirectPaymentBalance {
     }
 }
 
+function Get-FiberForwardingFee {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$Amount,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$FeeRateMillionths
+    )
+
+    if ($Amount -le [System.Numerics.BigInteger]::Zero) {
+        throw "Forwarded amount must be positive"
+    }
+    if ($FeeRateMillionths -lt [System.Numerics.BigInteger]::Zero) {
+        throw "Forwarding fee rate cannot be negative"
+    }
+
+    $million = [System.Numerics.BigInteger]::Parse("1000000")
+    $feeProduct = $Amount * $FeeRateMillionths
+    $fee = [System.Numerics.BigInteger]::Divide($feeProduct, $million)
+    if ([System.Numerics.BigInteger]::Remainder($feeProduct, $million) -gt [System.Numerics.BigInteger]::Zero) {
+        $fee += [System.Numerics.BigInteger]::One
+    }
+    return $fee
+}
+
+function Assert-FiberRoutedPaymentBalance {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$ExpectedAmount,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$ExpectedFee,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$ActualFee,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$LocalBefore,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$LocalAfter,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$RemoteBefore,
+        [Parameter(Mandatory = $true)]
+        [System.Numerics.BigInteger]$RemoteAfter
+    )
+
+    if ($ExpectedFee -le [System.Numerics.BigInteger]::Zero) {
+        throw "$Label routing fee assertion failed: expected fee must be positive"
+    }
+    if ($ActualFee -ne $ExpectedFee) {
+        throw "$Label routing fee assertion failed: expected $(Format-CkbBalance -Shannons $ExpectedFee) CKB, actual $(Format-CkbBalance -Shannons $ActualFee) CKB"
+    }
+
+    $expectedFirstHopAmount = $ExpectedAmount + $ExpectedFee
+    $localDecrease = $LocalBefore - $LocalAfter
+    $remoteIncrease = $RemoteAfter - $RemoteBefore
+    if ($localDecrease -ne $expectedFirstHopAmount) {
+        throw "$Label first-hop local balance assertion failed: expected decrease $(Format-CkbBalance -Shannons $expectedFirstHopAmount) CKB, actual change $($localDecrease.ToString()) shannons"
+    }
+    if ($remoteIncrease -ne $expectedFirstHopAmount) {
+        throw "$Label first-hop remote balance assertion failed: expected increase $(Format-CkbBalance -Shannons $expectedFirstHopAmount) CKB, actual change $($remoteIncrease.ToString()) shannons"
+    }
+
+    return [pscustomobject]@{
+        FirstHopAmount = $expectedFirstHopAmount
+        LocalDecrease  = $localDecrease
+        RemoteIncrease = $remoteIncrease
+        Fee            = $ActualFee
+        Status         = "Passed"
+    }
+}
+
 function Format-FiberLiquidityBar {
     param(
         [Parameter(Mandatory = $true)]
@@ -653,12 +723,14 @@ function Start-FiberService {
 
 Export-ModuleMember -Function @(
     "Assert-FiberDirectPaymentBalance",
+    "Assert-FiberRoutedPaymentBalance",
     "Convert-CkbToShannons",
     "ConvertFrom-HexQuantity",
     "ConvertTo-HexQuantity",
     "ConvertTo-CkbAddress",
     "Format-CkbBalance",
     "Format-FiberLiquidityBar",
+    "Get-FiberForwardingFee",
     "Get-ChannelStateName",
     "Get-ExecutableVersion",
     "Get-FiberPaths",
