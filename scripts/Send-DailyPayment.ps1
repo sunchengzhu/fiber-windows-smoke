@@ -7,10 +7,15 @@ param(
     [string]$Invoice,
     [string]$InvoiceReceiverRpcUrl,
     [string]$InvoiceReceiverAuthTokenFile,
+    [string]$TargetPubkey,
+    [string]$PaymentLabel,
+    [string]$MaximumFeeCkb,
+    [System.Numerics.BigInteger]$ExpectedRoutingFee = [System.Numerics.BigInteger]::Zero,
     [int]$TimeoutSeconds = 0,
     [switch]$Scheduled,
     [switch]$PassThru,
-    [switch]$AssertExactDirectBalance
+    [switch]$AssertExactDirectBalance,
+    [switch]$AssertExactRoutedBalance
 )
 
 Set-StrictMode -Version Latest
@@ -68,6 +73,27 @@ if ($null -ne $dailyPayment) {
 $maxFeeShannons = Convert-CkbToShannons -AmountCkb (
     [decimal]::Parse($maxFeeCkb, [System.Globalization.CultureInfo]::InvariantCulture)
 )
+$keysendMaxFeeShannons = [System.Numerics.BigInteger]::Zero
+if (-not [string]::IsNullOrWhiteSpace($MaximumFeeCkb)) {
+    $keysendMaxFeeShannons = Convert-CkbToShannons -AmountCkb (
+        [decimal]::Parse($MaximumFeeCkb, [System.Globalization.CultureInfo]::InvariantCulture)
+    )
+}
+if ($AssertExactDirectBalance -and $AssertExactRoutedBalance) {
+    throw "Direct and routed balance assertions cannot be enabled together"
+}
+if ($AssertExactRoutedBalance -and $Mode -notin @("Keysend", "Both")) {
+    throw "Routed balance assertions require Keysend mode"
+}
+
+$keysendTargetPubkey = [string]$settings.peer.pubkey
+if (-not [string]::IsNullOrWhiteSpace($TargetPubkey)) {
+    if ($TargetPubkey -notmatch "^(02|03)[0-9a-fA-F]{64}$") {
+        throw "TargetPubkey must be a compressed secp256k1 public key"
+    }
+    $keysendTargetPubkey = $TargetPubkey
+}
+$keysendLabel = if ([string]::IsNullOrWhiteSpace($PaymentLabel)) { "Keysend" } else { $PaymentLabel }
 
 function Get-ReadyPaymentChannel {
     $channels = @(Get-PeerChannels -Settings $settings | Where-Object { Test-ChannelReady -Channel $_ })
@@ -116,7 +142,9 @@ function Send-SmokePayment {
         [Parameter(Mandatory = $true)]
         [System.Numerics.BigInteger]$MaximumFee,
         [switch]$ReturnResult,
-        [switch]$RequireExactDirectBalance
+        [switch]$RequireExactDirectBalance,
+        [switch]$RequireExactRoutedBalance,
+        [System.Numerics.BigInteger]$RequiredRoutingFee = [System.Numerics.BigInteger]::Zero
     )
 
     $channelBefore = Get-ReadyPaymentChannel
@@ -152,6 +180,17 @@ function Send-SmokePayment {
             -RemoteBefore $remoteBefore `
             -RemoteAfter $remoteAfter
     }
+    elseif ($RequireExactRoutedBalance) {
+        $balanceAssertion = Assert-FiberRoutedPaymentBalance `
+            -Label $Label `
+            -ExpectedAmount $ExpectedAmount `
+            -ExpectedFee $RequiredRoutingFee `
+            -ActualFee $fee `
+            -LocalBefore $localBefore `
+            -LocalAfter $localAfter `
+            -RemoteBefore $remoteBefore `
+            -RemoteAfter $remoteAfter
+    }
 
     Write-Host ""
     Write-Host ("=" * 60)
@@ -159,11 +198,14 @@ function Send-SmokePayment {
     Write-Host ("=" * 60)
     Write-Host "Payment hash : $($payment.payment_hash)"
     Write-Host "Amount       : $(Format-CkbBalance -Shannons $ExpectedAmount) CKB"
-    Write-Host "Fee          : $(Format-CkbBalance -Shannons $fee) CKB"
+    Write-Host "Routing fee  : $(Format-CkbBalance -Shannons $fee) CKB ($($fee.ToString()) shannons)"
     Write-Host "Local        : $(Format-CkbBalance -Shannons $localBefore) -> $(Format-CkbBalance -Shannons $localAfter) CKB"
     Write-Host "Remote       : $(Format-CkbBalance -Shannons $remoteBefore) -> $(Format-CkbBalance -Shannons $remoteAfter) CKB"
     if ($RequireExactDirectBalance) {
         Write-Host "Assertions   : PASSED (exact amount, zero fee, balance conserved)"
+    }
+    elseif ($RequireExactRoutedBalance) {
+        Write-Host "Assertions   : PASSED (amount + positive routing fee conserved)"
     }
     Write-Host (Format-FiberLiquidityBar -LocalBalance $localAfter -RemoteBalance $remoteAfter)
     Write-Host ""
@@ -187,17 +229,19 @@ function Send-SmokePayment {
 
 if ($Mode -in @("Keysend", "Both")) {
     $keysendParams = @{
-        target_pubkey  = [string]$settings.peer.pubkey
+        target_pubkey  = $keysendTargetPubkey
         amount         = ConvertTo-HexQuantity -Value $amountShannons
         timeout        = ConvertTo-HexQuantity -Value ([System.Numerics.BigInteger]$TimeoutSeconds)
-        max_fee_amount = "0x0"
+        max_fee_amount = ConvertTo-HexQuantity -Value $keysendMaxFeeShannons
         keysend        = $true
         dry_run        = $false
     }
-    Send-SmokePayment -Label "Keysend" -PaymentParams $keysendParams `
-        -ExpectedAmount $amountShannons -MaximumFee ([System.Numerics.BigInteger]::Zero) `
+    Send-SmokePayment -Label $keysendLabel -PaymentParams $keysendParams `
+        -ExpectedAmount $amountShannons -MaximumFee $keysendMaxFeeShannons `
         -ReturnResult:$PassThru `
-        -RequireExactDirectBalance:$AssertExactDirectBalance
+        -RequireExactDirectBalance:$AssertExactDirectBalance `
+        -RequireExactRoutedBalance:$AssertExactRoutedBalance `
+        -RequiredRoutingFee $ExpectedRoutingFee
 }
 
 if ($Mode -in @("Invoice", "Both")) {

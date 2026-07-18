@@ -11,7 +11,7 @@ on:
         default: false
         type: boolean
       send_payment:
-        description: "Run the node B -> node A invoice and node A -> Bottle keysend flow"
+        description: "Run direct payments plus the node B -> node A -> Bottle routed-fee test"
         required: false
         default: false
         type: boolean
