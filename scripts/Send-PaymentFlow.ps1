@@ -251,9 +251,11 @@ if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
     $summary = @"
 ## Actual payment result
 
-> **Node B** -- Invoice **$invoiceAmountDisplay CKB** &rarr; **Node A** -- Keysend **$keysendAmountDisplay CKB** &rarr; **Bottle**
+> **1. Invoice:** **Node B** -- **$invoiceAmountDisplay CKB** &rarr; **Node A**
 
-> **Node B** -- Routed Keysend **$routedKeysendAmountDisplay CKB + $routingFee CKB fee** &rarr; **Node A** &rarr; **Bottle**
+> **2. Keysend:** **Node A** -- **$keysendAmountDisplay CKB** &rarr; **Bottle**
+
+> **3. Routed Keysend:** **Node B** -- **$routedKeysendAmountDisplay CKB + $routingFee CKB fee** &rarr; **Node A** &rarr; **Bottle**
 
 ### 1. Invoice: Node B &rarr; Node A ($invoiceAmountDisplay CKB)
 
