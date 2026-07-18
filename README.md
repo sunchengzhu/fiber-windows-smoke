@@ -5,8 +5,9 @@
 ## 支付拓扑
 
 ```text
-Node B -- 0.02 CKB Invoice --> Node A -- 0.01 CKB Keysend --> Bottle
-Node B -- 0.03 CKB Routed Keysend + fee --> Node A --> Bottle
+1. Invoice:        Node B -- 0.02 CKB --> Node A
+2. Keysend:        Node A -- 0.01 CKB --> Bottle
+3. Routed Keysend: Node B -- 0.03 CKB + fee --> Node A --> Bottle
 ```
 
 Node A 与 `fiber-testnet-public-bottle` 有一条 channel，Node B 与 Node A 有一条 channel；两个节点都作为 Windows Service 长期运行。
