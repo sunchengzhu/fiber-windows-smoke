@@ -27,7 +27,7 @@ if ([string]::IsNullOrWhiteSpace($SecondarySettingsPath)) {
 }
 
 if ($Detailed) {
-    Write-Host "=== Node A -> public Bottle ==="
+    Write-Host "=== Node A -> CkbaNode-1 (Fiber testnet public node) ==="
 }
 else {
     Write-Host "Fiber topology health"
@@ -36,7 +36,7 @@ else {
     -SettingsPath $PrimarySettingsPath `
     -AllowPending:$AllowPending `
     -Compact:(-not $Detailed) `
-    -Label "A -> Bottle"
+    -Label "A -> CkbaNode-1"
 
 if ($Detailed) {
     Write-Host ""

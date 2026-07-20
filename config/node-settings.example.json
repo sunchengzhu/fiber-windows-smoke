@@ -9,7 +9,7 @@
   "p2pListeningAddress": "/ip4/127.0.0.1/tcp/8228",
   "authTokenFile": "",
   "peer": {
-    "name": "fiber-testnet-public-bottle",
+    "name": "CkbaNode-1",
     "pubkey": "02b6d4e3ab86a2ca2fad6fae0ecb2e1e559e0b911939872a90abdda6d20302be71",
     "address": "",
     "asset": "CKB",
