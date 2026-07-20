@@ -6,11 +6,11 @@
 
 ```text
 1. Invoice:        Node B -- 0.02 CKB --> Node A
-2. Keysend:        Node A -- 0.01 CKB --> Bottle
-3. Routed Keysend: Node B -- 0.03 CKB + fee --> Node A --> Bottle
+2. Keysend:        Node A -- 0.01 CKB --> CkbaNode-1
+3. Routed Keysend: Node B -- 0.03 CKB + fee --> Node A --> CkbaNode-1
 ```
 
-Node A 与 `fiber-testnet-public-bottle` 有一条 channel，Node B 与 Node A 有一条 channel；两个节点都作为 Windows Service 长期运行。
+`CkbaNode-1` 是 Fiber 测试网公共节点。Node A 与 `CkbaNode-1` 有一条 channel，Node B 与 Node A 有一条 channel；两个本地节点都作为 Windows Service 长期运行。
 
 ## 每日 CI 做什么
 
@@ -22,8 +22,8 @@ Workflow：[`.github/workflows/fiber-node-maintenance.yml`](.github/workflows/fi
 2. 检查 Node A、Node B 是否有更新的 Fiber prerelease；有更新时校验 SHA-256、执行数据库兼容性预检并安全替换二进制。
 3. 检查两个 Windows 服务、RPC、peer 连接和两条 `ChannelReady` channel。
 4. Node A 创建 `0.02 CKB` invoice，由 Node B 支付。
-5. Node A 向 Bottle keysend `0.01 CKB`。
-6. Node B 通过 Node A 向 Bottle keysend `0.03 CKB`，验证 Node A 收取的转发手续费。
+5. Node A 向测试网公共节点 `CkbaNode-1` keysend `0.01 CKB`。
+6. Node B 通过 Node A 向 `CkbaNode-1` keysend `0.03 CKB`，验证 Node A 收取的转发手续费。
 7. 将支付前后余额、手续费、Payment Hash 和资金流写入日志及 GitHub Job Summary。
 
 自动升级不会创建新 channel。需要数据库 migration 的版本会拒绝自动升级，不会直接修改现有数据。
@@ -44,8 +44,8 @@ RPC 返回 `Success` 还不够。三笔支付都必须同时满足：
 
 ```text
 B -> A       B -0.02 CKB   A +0.02 CKB
-A -> Bottle  A -0.01 CKB   Bottle +0.01 CKB
-B -> A -> Bottle  B -(0.03 CKB + fee)   A +fee   Bottle +0.03 CKB
+A -> CkbaNode-1  A -0.01 CKB   CkbaNode-1 +0.01 CKB
+B -> A -> CkbaNode-1  B -(0.03 CKB + fee)   A +fee   CkbaNode-1 +0.03 CKB
 ```
 
 ## 手动运行

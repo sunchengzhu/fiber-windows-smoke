@@ -11,7 +11,7 @@ on:
         default: false
         type: boolean
       send_payment:
-        description: "Run direct payments plus the node B -> node A -> Bottle routed-fee test"
+        description: "Run direct payments plus the node B -> node A -> CkbaNode-1 routed-fee test"
         required: false
         default: false
         type: boolean

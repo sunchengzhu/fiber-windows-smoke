@@ -97,6 +97,8 @@ if (-not [string]::Equals(
     throw "Node B is configured for $($secondarySettings.peer.pubkey), not node A $($primaryInfo.pubkey)"
 }
 
+$publicNodeName = "CkbaNode-1"
+
 function Get-ReadyFlowChannel {
     param(
         [Parameter(Mandatory = $true)]
@@ -112,7 +114,7 @@ function Get-ReadyFlowChannel {
     return $channels[0]
 }
 
-$null = Get-ReadyFlowChannel -Settings $primarySettings -Description "Node A -> Bottle"
+$null = Get-ReadyFlowChannel -Settings $primarySettings -Description "Node A -> $publicNodeName"
 $null = Get-ReadyFlowChannel -Settings $secondarySettings -Description "Node B -> Node A"
 
 function Format-FlowCkb {
@@ -127,14 +129,13 @@ function Format-FlowCkb {
 $invoiceAmountDisplay = Format-FlowCkb -Shannons $invoiceAmount
 $keysendAmountDisplay = Format-FlowCkb -Shannons $keysendAmount
 $routedKeysendAmountDisplay = Format-FlowCkb -Shannons $routedKeysendAmount
-$bottleName = [string]$primarySettings.peer.name
 
 Write-Host ("=" * 60)
 Write-Host "PAYMENT FLOW"
 Write-Host ("=" * 60)
 Write-Host "Node B -- $invoiceAmountDisplay CKB Invoice --> Node A"
-Write-Host "Node A -- $keysendAmountDisplay CKB Keysend --> $bottleName"
-Write-Host "Node B -- $routedKeysendAmountDisplay CKB Routed Keysend --> Node A --> $bottleName (routing fee)"
+Write-Host "Node A -- $keysendAmountDisplay CKB Keysend --> $publicNodeName"
+Write-Host "Node B -- $routedKeysendAmountDisplay CKB Routed Keysend --> Node A --> $publicNodeName (routing fee)"
 Write-Host "Node A: $($primaryInfo.pubkey)"
 Write-Host "Node B: $($secondaryInfo.pubkey)"
 Write-Host ""
@@ -167,7 +168,7 @@ $keysendPayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
     -PassThru `
     -AssertExactDirectBalance
 
-$routedSecondHopBefore = Get-ReadyFlowChannel -Settings $primarySettings -Description "Node A -> Bottle"
+$routedSecondHopBefore = Get-ReadyFlowChannel -Settings $primarySettings -Description "Node A -> $publicNodeName"
 $routedFeeRate = ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.tlc_fee_proportional_millionths)
 $expectedRoutingFee = Get-FiberForwardingFee `
     -Amount $routedKeysendAmount `
@@ -184,15 +185,15 @@ $routedPayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
     -Mode Keysend `
     -AmountCkb $RoutedKeysendAmountCkb `
     -TargetPubkey ([string]$primarySettings.peer.pubkey) `
-    -PaymentLabel "Routed keysend B -> A -> Bottle" `
+    -PaymentLabel "Routed keysend B -> A -> $publicNodeName" `
     -MaximumFeeCkb ($RoutedMaxFeeCkb.ToString([System.Globalization.CultureInfo]::InvariantCulture)) `
     -ExpectedRoutingFee $expectedRoutingFee `
     -PassThru `
     -AssertExactRoutedBalance
 
-$routedSecondHopAfter = Get-ReadyFlowChannel -Settings $primarySettings -Description "Node A -> Bottle"
+$routedSecondHopAfter = Get-ReadyFlowChannel -Settings $primarySettings -Description "Node A -> $publicNodeName"
 $routedSecondHopAssertion = Assert-FiberDirectPaymentBalance `
-    -Label "Routed keysend A -> Bottle hop" `
+    -Label "Routed keysend A -> $publicNodeName hop" `
     -ExpectedAmount $routedKeysendAmount `
     -Fee ([System.Numerics.BigInteger]::Zero) `
     -LocalBefore (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.local_balance)) `
@@ -214,10 +215,10 @@ $routedLocalBefore = Format-FlowCkb -Shannons $routedPayment.LocalBefore
 $routedLocalAfter = Format-FlowCkb -Shannons $routedPayment.LocalAfter
 $routedRemoteBefore = Format-FlowCkb -Shannons $routedPayment.RemoteBefore
 $routedRemoteAfter = Format-FlowCkb -Shannons $routedPayment.RemoteAfter
-$routedBottleLocalBefore = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.local_balance))
-$routedBottleLocalAfter = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopAfter.local_balance))
-$routedBottleRemoteBefore = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.remote_balance))
-$routedBottleRemoteAfter = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopAfter.remote_balance))
+$routedPublicNodeLocalBefore = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.local_balance))
+$routedPublicNodeLocalAfter = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopAfter.local_balance))
+$routedPublicNodeRemoteBefore = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.remote_balance))
+$routedPublicNodeRemoteAfter = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopAfter.remote_balance))
 $routingFee = Format-FlowCkb -Shannons $routedPayment.Fee
 
 Write-Host ("=" * 60)
@@ -230,21 +231,21 @@ Write-Host "   Node A : $invoiceRemoteBefore -> $invoiceRemoteAfter CKB"
 Write-Host "   Routing fee : $invoiceFee CKB"
 Write-Host "   Assert : PASSED (exact $invoiceAmountDisplay CKB transfer)"
 Write-Host ""
-Write-Host "2. Node A -> $bottleName | Keysend $keysendAmountDisplay CKB"
+Write-Host "2. Node A -> $publicNodeName | Keysend $keysendAmountDisplay CKB"
 Write-Host "   Node A : $keysendLocalBefore -> $keysendLocalAfter CKB"
-Write-Host "   Bottle : $keysendRemoteBefore -> $keysendRemoteAfter CKB"
+Write-Host "   $publicNodeName : $keysendRemoteBefore -> $keysendRemoteAfter CKB"
 Write-Host "   Routing fee : $keysendFee CKB"
 Write-Host "   Assert : PASSED (exact $keysendAmountDisplay CKB transfer)"
 Write-Host ""
-Write-Host "3. Node B -> Node A -> $bottleName | Routed Keysend $routedKeysendAmountDisplay CKB"
+Write-Host "3. Node B -> Node A -> $publicNodeName | Routed Keysend $routedKeysendAmountDisplay CKB"
 Write-Host "   B -> A local  : $routedLocalBefore -> $routedLocalAfter CKB"
 Write-Host "   B -> A remote : $routedRemoteBefore -> $routedRemoteAfter CKB"
-Write-Host "   A -> Bottle   : $routedBottleLocalBefore -> $routedBottleLocalAfter CKB"
-Write-Host "   Bottle        : $routedBottleRemoteBefore -> $routedBottleRemoteAfter CKB"
+Write-Host "   A -> $publicNodeName : $routedPublicNodeLocalBefore -> $routedPublicNodeLocalAfter CKB"
+Write-Host "   $publicNodeName      : $routedPublicNodeRemoteBefore -> $routedPublicNodeRemoteAfter CKB"
 Write-Host "   Routing fee   : $routingFee CKB ($($routedPayment.Fee) shannons at $routedFeeRate millionths)"
 Write-Host "   Assert        : PASSED (positive fee, both hops, and balance conservation)"
 Write-Host ""
-Write-Host "FEE PATH: Node B -- $routedKeysendAmountDisplay CKB + $routingFee CKB fee --> Node A -- $routedKeysendAmountDisplay CKB --> Bottle"
+Write-Host "FEE PATH: Node B -- $routedKeysendAmountDisplay CKB + $routingFee CKB fee --> Node A -- $routedKeysendAmountDisplay CKB --> $publicNodeName"
 Write-Host ""
 
 if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
@@ -253,9 +254,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
 
 > **1. Invoice:** **Node B** -- **$invoiceAmountDisplay CKB** &rarr; **Node A**
 
-> **2. Keysend:** **Node A** -- **$keysendAmountDisplay CKB** &rarr; **Bottle**
+> **2. Keysend:** **Node A** -- **$keysendAmountDisplay CKB** &rarr; **$publicNodeName** *(Fiber testnet public node)*
 
-> **3. Routed Keysend:** **Node B** -- **$routedKeysendAmountDisplay CKB + $routingFee CKB fee** &rarr; **Node A** &rarr; **Bottle**
+> **3. Routed Keysend:** **Node B** -- **$routedKeysendAmountDisplay CKB + $routingFee CKB fee** &rarr; **Node A** &rarr; **$publicNodeName**
 
 ### 1. Invoice: Node B &rarr; Node A ($invoiceAmountDisplay CKB)
 
@@ -266,21 +267,21 @@ if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
 - **Status:** &#x2705; **Success**
 - **Payment hash:** $($invoicePayment.PaymentHash)
 
-### 2. Keysend: Node A &rarr; Bottle ($keysendAmountDisplay CKB)
+### 2. Keysend: Node A &rarr; $publicNodeName ($keysendAmountDisplay CKB)
 
 - **Node A:** $keysendLocalBefore &rarr; $keysendLocalAfter CKB
-- **Bottle:** $keysendRemoteBefore &rarr; $keysendRemoteAfter CKB
+- **${publicNodeName}:** $keysendRemoteBefore &rarr; $keysendRemoteAfter CKB
 - **Routing fee:** $keysendFee CKB
 - **Assertions:** &#x2705; Exact amount, zero fee, and balance conservation passed
 - **Status:** &#x2705; **Success**
 - **Payment hash:** $($keysendPayment.PaymentHash)
 
-### 3. Routed Keysend: Node B &rarr; Node A &rarr; Bottle ($routedKeysendAmountDisplay CKB)
+### 3. Routed Keysend: Node B &rarr; Node A &rarr; $publicNodeName ($routedKeysendAmountDisplay CKB)
 
 - **Node B / B-to-A channel:** $routedLocalBefore &rarr; $routedLocalAfter CKB
 - **Node A incoming / B-to-A channel:** $routedRemoteBefore &rarr; $routedRemoteAfter CKB
-- **Node A outgoing / A-to-Bottle channel:** $routedBottleLocalBefore &rarr; $routedBottleLocalAfter CKB
-- **Bottle:** $routedBottleRemoteBefore &rarr; $routedBottleRemoteAfter CKB
+- **Node A outgoing / A-to-$publicNodeName channel:** $routedPublicNodeLocalBefore &rarr; $routedPublicNodeLocalAfter CKB
+- **${publicNodeName}:** $routedPublicNodeRemoteBefore &rarr; $routedPublicNodeRemoteAfter CKB
 - **Routing fee earned by Node A:** **$routingFee CKB** ($($routedPayment.Fee) shannons, rate $routedFeeRate millionths)
 - **Assertions:** &#x2705; Positive fee, exact first-hop amount plus fee, exact second-hop amount, and balance conservation passed
 - **Status:** &#x2705; **Success**
