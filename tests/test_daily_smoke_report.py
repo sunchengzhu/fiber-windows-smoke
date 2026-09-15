@@ -83,29 +83,33 @@ def response(data):
 
 
 class PayloadTests(unittest.TestCase):
-    def test_success_reuses_all_payment_details(self):
+    def test_success_reuses_payment_results_in_a_compact_report(self):
         payload = report.payload_from_env(complete_env())
         embed = payload["embeds"][0]
         self.assertEqual(embed["color"], report.SUCCESS_COLOR)
-        self.assertEqual(embed["description"], "3/3 payment scenarios passed.")
+        self.assertEqual(embed["description"], "3/3 payment scenarios passed. · ⏱ 2m 5s")
         self.assertEqual(embed["url"], "https://github.com/sunchengzhu/fiber-windows-smoke/actions/runs/100")
         rendered = fields(payload)
-        self.assertIn("Branch `main` · `0123456`", rendered["Run overview"])
-        self.assertIn("⏱ 2m 5s", rendered["Run overview"])
-        self.assertIn("**All passed**", rendered["Preflight"])
-        self.assertIn("Node A FNN `fnn 0.9.1`", rendered["Run overview"])
-        for key, name in report.SCENARIOS:
-            self.assertIn("**Payment hash:** `0x", rendered["✅ " + name])
-            self.assertIn("1 → 0.98 CKB", rendered["✅ " + name])
-        routed = rendered["✅ " + report.SCENARIOS[2][1]]
-        self.assertIn("0.00003 CKB (3000 shannons)", routed)
-        self.assertIn("1000 millionths", routed)
+        self.assertNotIn("Branch", rendered["Run overview"])
+        self.assertEqual(rendered["Checks"], "✅ Preflight passed · Balances & fees verified")
+        self.assertIn("FNN (Node A/B) `fnn 0.9.1`", rendered["Run overview"])
+        self.assertEqual(len(embed["fields"]), 3)
+        self.assertEqual(len(rendered["Payments"].splitlines()), 3)
+        for (_, name), scenario in zip(report.SCENARIOS, success_payment()["scenarios"]):
+            self.assertIn(f"{name} · **{scenario['amount_ckb']} CKB** · fee {scenario['fee_ckb']} CKB", rendered["Payments"])
+        for scenario in success_payment()["scenarios"]:
+            self.assertNotIn(scenario["payment_hash"], json.dumps(payload))
+            self.assertNotIn(scenario["assertions"], json.dumps(payload))
+        self.assertNotIn("1 → 0.98 CKB", rendered["Payments"])
+        self.assertNotIn("shannons", rendered["Payments"])
+        self.assertNotIn("millionths", rendered["Payments"])
+        self.assertIn("Click the title", embed["footer"]["text"])
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
 
-    def test_schedule_and_actual_start_do_not_invent_delay_or_scheduled_date(self):
+    def test_actual_start_does_not_invent_delay_or_scheduled_date(self):
         overview = fields(report.payload_from_env(complete_env()))["Run overview"]
-        self.assertIn("Schedule: daily 08:01 CST (UTC+8)", overview)
-        self.assertIn("Actual start: 2026-09-15 08:02:03 CST", overview)
+        self.assertIn("Scheduled run · Started 2026-09-15 08:02:03 CST", overview)
+        self.assertNotIn("08:01", overview)
         self.assertNotIn("Delay", overview)
         self.assertNotIn("Scheduled 2026", overview)
 
@@ -117,13 +121,26 @@ class PayloadTests(unittest.TestCase):
         for key in ("ensure_a", "ensure_b", "topology_ensured"):
             steps[key]["outcome"] = "success"
         env = complete_env(steps)
-        env.update({"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "2"})
+        env.update({"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_REF_NAME": "codex/report-preview"})
         rendered = fields(report.payload_from_env(env))
-        self.assertIn("Trigger: workflow_dispatch", rendered["Run overview"])
-        self.assertNotIn("Schedule:", rendered["Run overview"])
+        self.assertIn("Manual run", rendered["Run overview"])
+        self.assertNotIn("Scheduled run", rendered["Run overview"])
+        self.assertIn("Branch `codex/report-preview` · `0123456`", rendered["Run overview"])
         self.assertIn("retry `2`", rendered["Run overview"])
-        self.assertIn("**All passed**", rendered["Preflight"])
-        self.assertIn("Node B channel", rendered["Preflight"])
+        self.assertIn("Preflight passed", rendered["Checks"])
+        steps["ensure_b"]["outcome"] = "failure"
+        env["FIBER_REPORT_STEPS_JSON"] = json.dumps(steps)
+        self.assertIn("❌ Node B channel", fields(report.payload_from_env(env))["Checks"])
+
+    def test_different_or_missing_node_versions_are_not_merged(self):
+        for version in ("fnn 0.9.2", None):
+            with self.subTest(version=version):
+                steps = complete_steps()
+                steps["update_b"]["outputs"]["fnn_version"] = version
+                overview = fields(report.payload_from_env(complete_env(steps)))["Run overview"]
+                self.assertIn("Node A FNN `fnn 0.9.1`", overview)
+                self.assertIn(f"Node B FNN `{version or 'unavailable'}`", overview)
+                self.assertNotIn("FNN (Node A/B)", overview)
 
     def test_failure_without_json_does_not_invent_payment_count(self):
         steps = complete_steps()
@@ -137,6 +154,7 @@ class PayloadTests(unittest.TestCase):
         self.assertIn("No structured payment summary", text)
         self.assertNotIn("0/3", text)
         self.assertNotIn("3/3", text)
+        self.assertNotIn("Balances & fees verified", text)
         self.assertNotIn("✅ Invoice", text)
 
     def test_bad_payment_json_has_safe_fallback(self):
@@ -172,8 +190,9 @@ class PayloadTests(unittest.TestCase):
         env = complete_env(steps)
         env["FIBER_REPORT_JOB_RESULT"] = "failure"
         rendered = fields(report.payload_from_env(env))
-        self.assertIn("❌ Node A update", rendered["Preflight"])
-        self.assertNotIn("All passed", rendered["Preflight"])
+        self.assertIn("❌ Node A update", rendered["Checks"])
+        self.assertNotIn("Preflight passed", rendered["Checks"])
+        self.assertNotIn("Checkout", rendered["Checks"])
 
     def test_missing_and_invalid_workflow_outputs_still_render(self):
         for raw in ("", "broken", "[]", "null"):
@@ -188,9 +207,9 @@ class PayloadTests(unittest.TestCase):
                 steps = complete_steps()
                 steps["initialize_report"]["outputs"]["started_at"] = started
                 steps["timing"]["outputs"]["duration_seconds"] = "NaN"
-                overview = fields(report.payload_from_env(complete_env(steps)))["Run overview"]
-                self.assertIn("Actual start: unavailable", overview)
-                self.assertIn("duration unavailable", overview)
+                payload = report.payload_from_env(complete_env(steps))
+                self.assertIn("Started unavailable", fields(payload)["Run overview"])
+                self.assertIn("duration unavailable", payload["embeds"][0]["description"])
 
     def test_missing_scenario_never_claims_three_passes(self):
         steps = complete_steps()
@@ -201,6 +220,8 @@ class PayloadTests(unittest.TestCase):
         text = json.dumps(report.payload_from_env(complete_env(steps)))
         self.assertIn("2/3 payment scenarios have verified success summaries", text)
         self.assertNotIn("3/3", text)
+        self.assertNotIn("Balances & fees verified", text)
+        self.assertIn("Summary unavailable", text)
 
     def test_long_untrusted_fields_obey_all_discord_limits(self):
         hostile = "😀@everyone`\n" * 2000
@@ -233,7 +254,7 @@ class PayloadTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 report.main(["--dry-run"])
-            self.assertEqual(json.loads(output.getvalue())["embeds"][0]["description"], "3/3 payment scenarios passed.")
+            self.assertIn("3/3 payment scenarios passed.", json.loads(output.getvalue())["embeds"][0]["description"])
             request.assert_not_called()
 
     def test_missing_secret_has_actionable_error(self):

@@ -23,9 +23,9 @@ OTHER_COLOR = 0xF1C40F
 EMBED_TOTAL_LIMIT = 6000
 FIELD_VALUE_LIMIT = 1024
 SCENARIOS = (
-    ("invoice", "Invoice · Node B → Node A"),
-    ("keysend", "Keysend · Node A → CkbaNode-1"),
-    ("routed", "Routed Keysend · Node B → Node A → CkbaNode-1"),
+    ("invoice", "Invoice · B → A"),
+    ("keysend", "Keysend · A → CkbaNode-1"),
+    ("routed", "Routed · B → A → CkbaNode-1"),
 )
 OUTCOMES = {
     "success": ("✅", "Passed"),
@@ -139,22 +139,27 @@ def collect_report(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
     }
 
 
-def _time_summary(report: Mapping[str, Any]) -> list[str]:
-    lines = []
-    if report.get("trigger") == "schedule":
-        # The start date cannot establish which scheduled date triggered a queued run.
-        lines.append("Schedule: daily 08:01 CST (UTC+8)")
-    else:
-        lines.append(f"Trigger: {_truncate(_one_line(report.get('trigger')), 80)}")
+def _time_summary(report: Mapping[str, Any]) -> str:
+    trigger = {"schedule": "Scheduled run", "workflow_dispatch": "Manual run"}.get(
+        report.get("trigger"), _truncate(_one_line(report.get("trigger")), 80)
+    )
     try:
         started = datetime.fromisoformat(str(report.get("started_at", "")).replace("Z", "+00:00"))
         if started.tzinfo is None:
             raise ValueError("Timezone required")
         started = started.astimezone(timezone(timedelta(hours=8)))
-        lines.append(f"Actual start: {started:%Y-%m-%d %H:%M:%S} CST")
+        actual = f"{started:%Y-%m-%d %H:%M:%S} CST"
     except (ValueError, TypeError, OverflowError):
-        lines.append("Actual start: unavailable")
-    return lines
+        actual = "unavailable"
+    return f"{trigger} · Started {actual}"
+
+
+def _version_summary(report: Mapping[str, Any]) -> str:
+    a, b = report.get("fnn_a"), report.get("fnn_b")
+    if a and str(a).strip() and a == b:
+        return f"FNN (Node A/B) `{_truncate(_one_line(a), 160)}`"
+    return (f"Node A FNN `{_truncate(_one_line(a), 160)}`\n"
+            f"Node B FNN `{_truncate(_one_line(b), 160)}`")
 
 
 def _preflight_summary(report: Mapping[str, Any]) -> str:
@@ -163,58 +168,43 @@ def _preflight_summary(report: Mapping[str, Any]) -> str:
         ("checkout", "Checkout"), ("initialize_report", "Report setup"),
         ("syntax", "PowerShell syntax"), ("unit", "PowerShell tests"),
         ("update_a", "Node A update"), ("update_b", "Node B update"),
+        ("timing", "Report timing"),
     ]
     if any(_step(steps, key).get("outcome") not in {None, "skipped"} for key in ("ensure_a", "ensure_b")):
         checks += [("ensure_a", "Node A channel"), ("ensure_b", "Node B channel"), ("topology_ensured", "Topology")]
     else:
         checks.append(("topology", "Topology"))
     if all(_step(steps, key).get("outcome") == "success" for key, _ in checks):
-        return "✅ **All passed** · " + " · ".join(label for _, label in checks)
-    result = " · ".join(f"{_outcome(_step(steps, key).get('outcome'))[0]} {label}" for key, label in checks)
+        return "✅ Preflight passed"
+    result = "\n".join(f"{_outcome(_step(steps, key).get('outcome'))[0]} {label}"
+                       for key, label in checks if _step(steps, key).get("outcome") != "success")
     if report.get("steps_invalid"):
         result += "\nWorkflow step details unavailable (invalid JSON)."
     return result
 
 
-def _scenario_summary(scenario: Mapping[str, Any]) -> str:
-    lines = [f"✅ **Passed** · Amount **{_truncate(_one_line(scenario.get('amount_ckb')), 80)} CKB**"]
-    balances = scenario.get("balances")
-    if isinstance(balances, list):
-        for balance in balances[:8]:
-            if isinstance(balance, Mapping):
-                label = _truncate(_one_line(balance.get("label")), 80)
-                before = _truncate(_one_line(balance.get("before_ckb")), 80)
-                after = _truncate(_one_line(balance.get("after_ckb")), 80)
-                lines.append(f"**{label}:** {before} → {after} CKB")
-    fee = _truncate(_one_line(scenario.get("fee_ckb")), 80)
-    fee_shannons = _truncate(_one_line(scenario.get("fee_shannons")), 80)
-    lines.append(f"**Fee:** {fee} CKB ({fee_shannons} shannons)")
-    if scenario.get("fee_rate_millionths") is not None:
-        lines.append(f"**Node A forwarding rate:** {_truncate(_one_line(scenario['fee_rate_millionths']), 80)} millionths")
-    lines.append(f"**Assertions:** {_truncate(_one_line(scenario.get('assertions')), 240)}")
-    lines.append(f"**Payment hash:** `{_truncate(_one_line(scenario.get('payment_hash')), 100)}`")
-    return _truncate("\n".join(lines), FIELD_VALUE_LIMIT)
+def _scenario_summary(name: str, scenario: Mapping[str, Any]) -> str:
+    amount = _truncate(_one_line(scenario.get("amount_ckb")), 64)
+    fee = _truncate(_one_line(scenario.get("fee_ckb")), 64)
+    return f"{name} · **{amount} CKB** · fee {fee} CKB"
 
 
 def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
     """Render one bounded Discord embed without network side effects."""
     result = report.get("job_result")
-    emoji, label = _outcome(result)
+    emoji, _ = _outcome(result)
     branch = _truncate(_one_line(report.get("branch")), 100)
     sha = _one_line(report.get("sha"))[:7]
-    ref = f"Branch `{branch}` · `{sha}`"
+    ref = f"Branch `{branch}` · `{sha}`" if report.get("branch") != "main" else ""
     attempt = _one_line(report.get("run_attempt"), "1")
     if attempt != "1":
-        ref += f" · retry `{_truncate(attempt, 30)}`"
-    overview = [
-        f"{emoji} **{label}** · ⏱ {_duration(report.get('duration_seconds'))}", ref,
-        f"Node A FNN `{_truncate(_one_line(report.get('fnn_a')), 160)}`",
-        f"Node B FNN `{_truncate(_one_line(report.get('fnn_b')), 160)}`",
-        *_time_summary(report),
-    ]
+        ref += (" · " if ref else "") + f"retry `{_truncate(attempt, 30)}`"
+    overview = [_time_summary(report), _version_summary(report)]
+    if ref:
+        overview.append(ref)
     fields = [
         {"name": "Run overview", "value": _truncate("\n".join(overview), FIELD_VALUE_LIMIT), "inline": False},
-        {"name": "Preflight", "value": _truncate(_preflight_summary(report), FIELD_VALUE_LIMIT), "inline": False},
+        {"name": "Checks", "value": _truncate(_preflight_summary(report), FIELD_VALUE_LIMIT), "inline": False},
     ]
     payment = _mapping(report.get("payment"))
     if payment.get("status") == "disabled":
@@ -230,10 +220,12 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
         description = f"{len(scenarios)}/3 payment scenarios have verified success summaries."
         if len(scenarios) == 3:
             description = "3/3 payment scenarios passed."
+            fields[1]["value"] += " · Balances & fees verified"
+        payment_lines = []
         for key, name in SCENARIOS:
             scenario = scenarios.get(key)
-            fields.append({"name": ("✅ " if scenario else "❔ ") + name,
-                           "value": _scenario_summary(scenario) if scenario else "Structured summary unavailable; open the run log for details.", "inline": False})
+            payment_lines.append(_scenario_summary(name, scenario) if scenario else f"❔ {name} · Summary unavailable")
+        fields.append({"name": "Payments", "value": _truncate("\n".join(payment_lines), FIELD_VALUE_LIMIT), "inline": False})
     else:
         outcome = report.get("payment_outcome")
         if outcome in {"failure", "cancelled"}:
@@ -250,12 +242,15 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
         fields.append({"name": f"{_outcome(outcome)[0]} Payment flow", "value": message, "inline": False})
     if result != "success":
         description += f" Workflow {_outcome(result)[1].lower()}."
+    description += f" · ⏱ {_duration(report.get('duration_seconds'))}"
+    for field in fields:
+        field["value"] = _truncate(field["value"], FIELD_VALUE_LIMIT)
     embed: dict[str, Any] = {
         "title": _truncate(f"{emoji} Fiber Windows Daily Smoke · Testnet · #{_one_line(report.get('run_number'))}", 256),
         "description": _truncate(description, 4096),
         "color": SUCCESS_COLOR if result == "success" else FAILURE_COLOR if result == "failure" else OTHER_COLOR,
         "fields": fields,
-        "footer": {"text": "GitHub Actions report · existing payment results"},
+        "footer": {"text": "Click the title for the full report and logs"},
     }
     if report.get("run_url"):
         embed["url"] = _truncate(str(report["run_url"]), 2048)
