@@ -114,6 +114,7 @@ function Wait-PaymentSuccess {
     if ([string]::IsNullOrWhiteSpace($paymentHash)) {
         throw "send_payment returned no payment_hash"
     }
+    Write-Host "Payment hash : $paymentHash"
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds + 15)
     while ([string]$payment.status -notin @("Success", "Failed")) {
         if ([DateTime]::UtcNow -ge $deadline) {
@@ -196,7 +197,6 @@ function Send-SmokePayment {
     Write-Host ("=" * 60)
     Write-Host "$($Label.ToUpperInvariant()) - AFTER - SUCCESS"
     Write-Host ("=" * 60)
-    Write-Host "Payment hash : $($payment.payment_hash)"
     Write-Host "Amount       : $(Format-CkbBalance -Shannons $ExpectedAmount) CKB"
     Write-Host "Routing fee  : $(Format-CkbBalance -Shannons $fee) CKB ($($fee.ToString()) shannons)"
     Write-Host "Local        : $(Format-CkbBalance -Shannons $localBefore) -> $(Format-CkbBalance -Shannons $localAfter) CKB"
