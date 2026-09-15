@@ -39,6 +39,13 @@ if ($Scheduled -and $null -ne $paymentFlow) {
     $enabled = [bool](Get-ObjectPropertyValue -Object $paymentFlow -Name "enabled" -Default $true)
     if (-not $enabled) {
         Write-Host "Payment flow is disabled in settings; nothing sent"
+        if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
+            $disabledReport = @{
+                status = "disabled"
+                reason = "Payment flow is disabled in settings; nothing sent"
+            } | ConvertTo-Json -Compress
+            "report=$disabledReport" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        }
         return
     }
 }
@@ -220,6 +227,57 @@ $routedPublicNodeLocalAfter = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity 
 $routedPublicNodeRemoteBefore = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.remote_balance))
 $routedPublicNodeRemoteAfter = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopAfter.remote_balance))
 $routingFee = Format-FlowCkb -Shannons $routedPayment.Fee
+
+# Export the same verified values used by the log and Job Summary below. An
+# absent report on failure means the complete flow was not verified; consumers
+# must not infer the status of individual payments from that absence.
+if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
+    $paymentReport = @{
+        status = "success"
+        scenarios = @(
+            @{
+                key = "invoice"
+                amount_ckb = $invoiceAmountDisplay
+                fee_ckb = $invoiceFee
+                fee_shannons = [string]$invoicePayment.Fee
+                payment_hash = [string]$invoicePayment.PaymentHash
+                assertions = "Exact amount, zero fee, and balance conservation passed"
+                balances = @(
+                    @{ label = "Node B"; before_ckb = $invoiceLocalBefore; after_ckb = $invoiceLocalAfter }
+                    @{ label = "Node A"; before_ckb = $invoiceRemoteBefore; after_ckb = $invoiceRemoteAfter }
+                )
+            }
+            @{
+                key = "keysend"
+                amount_ckb = $keysendAmountDisplay
+                fee_ckb = $keysendFee
+                fee_shannons = [string]$keysendPayment.Fee
+                payment_hash = [string]$keysendPayment.PaymentHash
+                assertions = "Exact amount, zero fee, and balance conservation passed"
+                balances = @(
+                    @{ label = "Node A"; before_ckb = $keysendLocalBefore; after_ckb = $keysendLocalAfter }
+                    @{ label = $publicNodeName; before_ckb = $keysendRemoteBefore; after_ckb = $keysendRemoteAfter }
+                )
+            }
+            @{
+                key = "routed"
+                amount_ckb = $routedKeysendAmountDisplay
+                fee_ckb = $routingFee
+                fee_shannons = [string]$routedPayment.Fee
+                fee_rate_millionths = [string]$routedFeeRate
+                payment_hash = [string]$routedPayment.PaymentHash
+                assertions = "Positive fee, exact first-hop amount plus fee, exact second-hop amount, and balance conservation passed"
+                balances = @(
+                    @{ label = "Node B / B-to-A"; before_ckb = $routedLocalBefore; after_ckb = $routedLocalAfter }
+                    @{ label = "Node A incoming / B-to-A"; before_ckb = $routedRemoteBefore; after_ckb = $routedRemoteAfter }
+                    @{ label = "Node A outgoing / A-to-$publicNodeName"; before_ckb = $routedPublicNodeLocalBefore; after_ckb = $routedPublicNodeLocalAfter }
+                    @{ label = $publicNodeName; before_ckb = $routedPublicNodeRemoteBefore; after_ckb = $routedPublicNodeRemoteAfter }
+                )
+            }
+        )
+    } | ConvertTo-Json -Depth 8 -Compress
+    "report=$paymentReport" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+}
 
 Write-Host ("=" * 60)
 Write-Host "PAYMENT FLOW RESULT - SUCCESS"

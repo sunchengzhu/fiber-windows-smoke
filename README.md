@@ -25,6 +25,7 @@ Workflow：[`.github/workflows/fiber-node-maintenance.yml`](.github/workflows/fi
 5. Node A 向测试网公共节点 `CkbaNode-1` keysend `0.01 CKB`。
 6. Node B 通过 Node A 向 `CkbaNode-1` keysend `0.03 CKB`，验证 Node A 收取的转发手续费。
 7. 将支付前后余额、手续费、Payment Hash 和资金流写入日志及 GitHub Job Summary。
+8. 执行结束后向 Discord 发送汇总卡片，包括运行状态、节点版本、前置检查和三笔支付明细；失败时也发送。
 
 自动升级不会创建新 channel。需要数据库 migration 的版本会拒绝自动升级，不会直接修改现有数据。
 
@@ -55,6 +56,55 @@ B -> A -> CkbaNode-1  B -(0.03 CKB + fee)   A +fee   CkbaNode-1 +0.03 CKB
 ```text
 ensure_channel: false
 send_payment:   true
+send_discord_report: true
 ```
 
 `ensure_channel` 可能锁定链上 CKB，日常不要勾选；`send_payment` 会执行三笔真实支付：`0.02 + 0.01 + 0.03 CKB`，另加一笔动态计算的路由手续费。
+
+`send_discord_report` 只控制手动运行是否发报告，默认关闭；定时运行始终尝试发送。该开关本身不会触发支付。
+
+## Discord 日报配置
+
+目标频道 ID：`1549402632203018410`。使用与 `cch-daily-smoke` 相同的 Discord Webhook 卡片方式，**只需配置一个 Secret**：
+
+1. 在 Discord 目标频道打开 **编辑频道 → 整合 → Webhooks → 新建 Webhook**，确认所选频道正确并复制 Webhook URL。创建者需要该频道的 **管理 Webhooks** 权限，详见 [Discord 官方说明](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks)。
+2. 打开 [本仓库的 Actions Secrets 设置](https://github.com/sunchengzhu/fiber-windows-smoke/settings/secrets/actions)，选择 **New repository secret**：
+   - Name：`DISCORD_WEBHOOK_URL`
+   - Secret：上一步复制的完整 URL。
+3. 包含本功能的代码进入 `main` 后，每日定时运行会自动发送。可手动勾选 `send_discord_report` 验证发送；`send_payment=false` 时只执行原有升级和健康检查，卡片明确显示未请求支付。如需完整支付明细，同时勾选 `send_payment`。
+
+也可以在自己的终端交互式保存 Secret，避免把 URL 写入命令历史：
+
+```sh
+gh secret set DISCORD_WEBHOOK_URL --repo sunchengzhu/fiber-windows-smoke
+```
+
+Webhook URL 已绑定频道，频道 ID 本身不是发送凭据；不需要 Bot Token，也不需要在 Windows 上安装 Python 或额外配置凭据。发送前会校验 Webhook 对应的频道 ID，若不匹配则拒绝发送。不要将 URL 提交到仓库、粘贴进日志或聊天，也不要直接使用绑定到 CCH 频道的 Webhook。若以后更换频道，需要同时更新 workflow 中的 `DISCORD_CHANNEL_ID` 和 Secret。
+
+### 报告内容与失败处理
+
+- 原支付脚本把已经通过断言的金额、余额、手续费和 Payment Hash 同时写到 GitHub Job Summary 和结构化步骤输出。Discord 直接复用这些结果，不会再执行支付或查询节点。
+- 独立 Ubuntu 通知 job 在 Windows job 结束后发送一张卡片，包含 Actions 链接、分支/commit、耗时、北京时间的实际开始时间、Node A/B 的 Fiber 版本、前置检查及三条资金流。
+- 计划时间为北京时间 **08:01**；GitHub 的 cron 可能延迟。卡片区分计划时刻与实际开始时间，不将计划时刻当成实际执行时间。
+- 支付全部完成并通过断言后才导出三笔明细。流程中途失败时，卡片显示失败步骤并提示明细未生成，通过 Actions 链接查看日志，不推测某一笔是否已经发送或通过。
+- 定时运行遇到 `paymentFlow.enabled=false` 会显示支付已禁用；手动运行没有请求支付时会显示跳过。都不会显示 `3/3` 通过。该配置只限制定时支付，手动 `send_payment=true` 仍按原有行为执行支付。
+- Secret 未配置、频道不匹配或 Discord 请求失败会在 **Send Discord report** 步骤显示错误，通知发送错误不会改变 Windows 烟测 job 的结论；报告不会触发 `@everyone` 等提及。
+
+### 本地验证
+
+以下检查均不访问 Fiber 节点、不发送 Discord 消息：
+
+```sh
+python3 -m unittest discover -s tests -p 'test_daily_smoke_report.py'
+python3 scripts/send_daily_smoke_report.py --dry-run
+```
+
+PowerShell 检查：
+
+```powershell
+tests\Test-PowerShellSyntax.ps1
+tests\Test-Module.ps1
+tests\Test-PaymentFlowReport.ps1
+```
+
+`--dry-run` 只输出 JSON 卡片预览，可通过 `FIBER_REPORT_JOB_RESULT`、`FIBER_REPORT_STEPS_JSON` 和 GitHub 上下文环境变量输入运行数据；不提供输入时明确显示数据不可用。
