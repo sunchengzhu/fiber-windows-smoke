@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      send_discord_report:
+        description: "Send this run's report to Discord (scheduled runs always send)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -27,56 +32,110 @@ jobs:
   maintain-node:
     runs-on: [self-hosted, windows, x64, fiber-windows]
     timeout-minutes: 45
+    outputs:
+      steps_json: ${{ toJSON(steps) }}
     env:
       FIBER_WINDOWS_SETTINGS: C:\fiber-node\automation\settings.json
       FIBER_WINDOWS_SECONDARY_SETTINGS: C:\fiber-node-b\automation\settings.json
       GITHUB_TOKEN: ${{ github.token }}
 
     steps:
+      - name: Record report start time
+        id: initialize_report
+        shell: powershell
+        run: |
+          "started_at=$([DateTime]::UtcNow.ToString('o'))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - uses: actions/checkout@v6
+        id: checkout
 
       - name: Validate PowerShell syntax
+        id: syntax
         shell: powershell
         run: tests\Test-PowerShellSyntax.ps1
 
-      - name: Run module unit checks
+      - name: Run module and report unit checks
+        id: unit
         shell: powershell
-        run: tests\Test-Module.ps1
+        run: |
+          tests\Test-Module.ps1
+          tests\Test-PaymentFlowReport.ps1
 
       - name: Update node A Fiber binary safely
+        id: update_a
         shell: powershell
         run: scripts\Update-FiberBinary.ps1
 
       - name: Update node B Fiber binary safely
+        id: update_b
         shell: powershell
         run: scripts\Update-FiberBinary.ps1 -SettingsPath $env:FIBER_WINDOWS_SECONDARY_SETTINGS
 
       - name: Check both nodes and channels
+        id: topology
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.ensure_channel }}
         shell: powershell
         run: scripts\Test-PaymentTopology.ps1
 
       - name: Explicitly ensure node A public channel
+        id: ensure_a
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
         run: scripts\Ensure-Channel.ps1
 
       - name: Explicitly ensure node B to node A channel
+        id: ensure_b
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
         run: scripts\Ensure-SecondNodeChannel.ps1
 
       - name: Check newly ensured channels
+        id: topology_ensured
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
         run: scripts\Test-PaymentTopology.ps1
 
       - name: Run scheduled payment flow
+        id: payment_scheduled
         if: ${{ github.event_name == 'schedule' }}
         shell: powershell
         run: scripts\Send-PaymentFlow.ps1 -Scheduled
 
       - name: Run manually requested payment flow
+        id: payment_manual
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_payment }}
         shell: powershell
         run: scripts\Send-PaymentFlow.ps1
+
+      - name: Record report duration
+        id: timing
+        if: ${{ always() }}
+        shell: powershell
+        env:
+          REPORT_STARTED_AT: ${{ steps.initialize_report.outputs.started_at }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:REPORT_STARTED_AT)) {
+            $started = [DateTimeOffset]::Parse($env:REPORT_STARTED_AT)
+            $seconds = [Math]::Max(0, [Math]::Round(([DateTimeOffset]::UtcNow - $started).TotalSeconds))
+            "duration_seconds=$seconds" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+
+  notify-discord:
+    runs-on: ubuntu-24.04
+    needs: maintain-node
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.send_discord_report) }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Test report rendering and delivery safeguards
+        run: python3 -m unittest discover -s tests -p 'test_daily_smoke_report.py'
+
+      - name: Send Discord report
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_CHANNEL_ID: "1549402632203018410"
+          FIBER_REPORT_JOB_RESULT: ${{ needs.maintain-node.result }}
+          FIBER_REPORT_STEPS_JSON: ${{ needs.maintain-node.outputs.steps_json }}
+        run: python3 scripts/send_daily_smoke_report.py

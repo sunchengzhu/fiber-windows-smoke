@@ -93,6 +93,9 @@ try {
             $nodeInfo = Wait-FiberRpc -Settings $settings -TimeoutSeconds 60
             Write-Host "Node healthy: version=$($nodeInfo.version) pubkey=$($nodeInfo.pubkey)"
         }
+        if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
+            "fnn_version=$currentFnnVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        }
         return
     }
 
@@ -135,6 +138,9 @@ try {
         Start-FiberService -ServiceName ([string]$settings.serviceName)
         $nodeInfo = Wait-FiberRpc -Settings $settings -TimeoutSeconds 180
         Write-Host "Node healthy after update: version=$($nodeInfo.version) pubkey=$($nodeInfo.pubkey)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
+        "fnn_version=$targetFnnVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
     }
 }
 catch {
