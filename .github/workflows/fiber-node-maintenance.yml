@@ -87,6 +87,7 @@ jobs:
         shell: powershell
         run: |
           tests\Test-Module.ps1
+          tests\Test-PeerConnectivity.ps1
           tests\Test-PaymentFlowReport.ps1
           tests\Test-DailySchedule.ps1
           tests\Test-DailyDispatch.ps1
@@ -100,6 +101,11 @@ jobs:
         id: update_b
         shell: powershell
         run: scripts\Update-FiberBinary.ps1 -SettingsPath $env:FIBER_WINDOWS_SECONDARY_SETTINGS
+
+      - name: Reconnect configured payment peers
+        id: reconnect
+        shell: powershell
+        run: scripts\Connect-PaymentPeers.ps1
 
       - name: Check both nodes and channels
         id: topology
