@@ -117,6 +117,8 @@ $beijingNow = [DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8))
 $nextStart = [DateTimeOffset]::new($beijingNow.Year, $beijingNow.Month, $beijingNow.Day, 10, 30, 0, [TimeSpan]::FromHours(8))
 if ($nextStart -le $beijingNow) { $nextStart = $nextStart.AddDays(1) }
 $templatePath = Join-Path (Split-Path -Parent $PSScriptRoot) "deploy/fiber-windows-smoke-dispatch.xml"
+# The template omits an encoding declaration because -Xml receives a Unicode
+# string, not the UTF-8 bytes stored in the repository.
 $taskXml = Get-Content -LiteralPath $templatePath -Raw
 $replacements = @{
     "__START_BOUNDARY__" = $nextStart.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ")

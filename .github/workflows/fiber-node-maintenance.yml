@@ -91,6 +91,7 @@ jobs:
           tests\Test-PaymentFlowReport.ps1
           tests\Test-DailySchedule.ps1
           tests\Test-DailyDispatch.ps1
+          tests\Test-ScheduledTaskXml.ps1
 
       - name: Update node A Fiber binary safely
         id: update_a
