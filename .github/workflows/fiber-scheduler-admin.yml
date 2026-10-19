@@ -1,0 +1,42 @@
+name: Fiber Windows scheduler administration
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Check, install, or pause the Windows 10:30 scheduler"
+        type: choice
+        default: Check
+        options:
+          - Check
+          - Install
+          - Pause
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fiber-windows-node-maintenance
+  cancel-in-progress: false
+
+jobs:
+  scheduler:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: [self-hosted, windows, x64, fiber-windows]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Validate scheduler scripts
+        shell: powershell
+        run: |
+          tests\Test-PowerShellSyntax.ps1
+          tests\Test-DailySchedule.ps1
+          tests\Test-DailyDispatch.ps1
+      - name: Manage Windows scheduler
+        shell: powershell
+        env:
+          SCHEDULER_OPERATION: ${{ inputs.operation }}
+          FIBER_SMOKE_DISPATCH_TOKEN: ${{ inputs.operation == 'Install' && secrets.FIBER_SMOKE_DISPATCH_TOKEN || '' }}
+        run: scripts\Install-DailySchedule.ps1 -Operation $env:SCHEDULER_OPERATION

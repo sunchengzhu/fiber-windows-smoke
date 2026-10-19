@@ -108,12 +108,13 @@ def collect_report(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Read only explicit workflow outputs and GitHub context, never node RPCs."""
     env = os.environ if environ is None else environ
     steps, steps_invalid = _parse_object(env.get("FIBER_REPORT_STEPS_JSON"))
+    is_daily = env.get("FIBER_REPORT_IS_DAILY") == "true" or env.get("GITHUB_EVENT_NAME") == "schedule"
     payment_ids = ("payment_scheduled", "payment_manual")
     selected = next((key for key in payment_ids if _output(steps, key, "report")), None)
     if selected is None:
         selected = next(
             (key for key in payment_ids if _step(steps, key).get("outcome") not in {None, "skipped"}),
-            "payment_scheduled" if env.get("GITHUB_EVENT_NAME") == "schedule" else "payment_manual",
+            "payment_scheduled" if is_daily else "payment_manual",
         )
     payment, payment_invalid = _parse_object(_output(steps, selected, "report"))
     server = env.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
@@ -136,6 +137,8 @@ def collect_report(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
         "branch": env.get("GITHUB_REF_NAME", "unknown"),
         "sha": env.get("GITHUB_SHA", "unknown"),
         "trigger": env.get("GITHUB_EVENT_NAME", "unknown"),
+        "is_daily": is_daily,
+        "gate_outcome": env.get("FIBER_REPORT_GATE_OUTCOME"),
     }
 
 
@@ -143,6 +146,8 @@ def _time_summary(report: Mapping[str, Any]) -> str:
     trigger = {"schedule": "Scheduled run", "workflow_dispatch": "Manual run"}.get(
         report.get("trigger"), _truncate(_one_line(report.get("trigger")), 80)
     )
+    if report.get("is_daily"):
+        trigger = "Scheduled run"
     try:
         started = datetime.fromisoformat(str(report.get("started_at", "")).replace("Z", "+00:00"))
         if started.tzinfo is None:
@@ -170,6 +175,9 @@ def _preflight_summary(report: Mapping[str, Any]) -> str:
         ("update_a", "Node A update"), ("update_b", "Node B update"),
         ("timing", "Report timing"),
     ]
+    if report.get("gate_outcome") is not None:
+        checks.insert(0, ("daily_gate", "Daily execution gate"))
+        steps = {**steps, "daily_gate": {"outcome": report["gate_outcome"]}}
     if any(_step(steps, key).get("outcome") not in {None, "skipped"} for key in ("ensure_a", "ensure_b")):
         checks += [("ensure_a", "Node A channel"), ("ensure_b", "Node B channel"), ("topology_ensured", "Topology")]
     else:

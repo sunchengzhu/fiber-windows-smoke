@@ -68,6 +68,10 @@ function Import-FiberSettings {
     if ([string]$settings.releaseChannel -notin @("stable", "prerelease")) {
         throw "releaseChannel must be 'stable' or 'prerelease'"
     }
+    if ([string]$settings.releaseChannel -eq "prerelease") {
+        Write-Warning "releaseChannel=prerelease is no longer supported; using stable releases only"
+        $settings.releaseChannel = "stable"
+    }
     if ([string]$settings.serviceName -notmatch "^[A-Za-z0-9]+$") {
         throw "serviceName must contain only ASCII letters and digits because WinSW uses it as the service id"
     }
@@ -644,7 +648,11 @@ function Get-FiberRelease {
 
     if (-not [string]::IsNullOrWhiteSpace($releaseTag)) {
         $uri = "https://api.github.com/repos/$repository/releases/tags/$releaseTag"
-        return Invoke-RestMethod -Uri $uri -Headers $headers -UseBasicParsing
+        $release = Invoke-RestMethod -Uri $uri -Headers $headers -UseBasicParsing
+        if ([bool]$release.draft -or [bool]$release.prerelease) {
+            throw "Pinned Fiber release '$releaseTag' is a draft or prerelease; only stable releases are supported"
+        }
+        return $release
     }
 
     $uri = "https://api.github.com/repos/$repository/releases?per_page=30"
@@ -653,13 +661,11 @@ function Get-FiberRelease {
     $releaseResponse = Invoke-RestMethod -Uri $uri -Headers $headers -UseBasicParsing
     $releases = @($releaseResponse)
     $candidates = @($releases | Where-Object {
-        -not [bool]$_.draft -and (
-            [string]$Settings.releaseChannel -eq "prerelease" -or -not [bool]$_.prerelease
-        )
+        -not [bool]$_.draft -and -not [bool]$_.prerelease
     })
     $release = $candidates | Sort-Object { [DateTimeOffset]$_.published_at } -Descending | Select-Object -First 1
     if ($null -eq $release) {
-        throw "No matching Fiber release found for channel '$($Settings.releaseChannel)'"
+        throw "No stable Fiber release found"
     }
     return $release
 }
