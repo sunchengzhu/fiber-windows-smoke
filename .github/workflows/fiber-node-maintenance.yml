@@ -1,10 +1,16 @@
 name: Fiber Windows node maintenance
+run-name: ${{ inputs.scheduled_date && format('Fiber Windows smoke · {0}', inputs.scheduled_date) || (github.event_name == 'schedule' && 'Fiber Windows smoke · GitHub fallback' || 'Fiber Windows smoke · manual') }}
 
 on:
   schedule:
-    - cron: "1 0 * * *" # 08:01 Asia/Shanghai (UTC+8)
+    - cron: "47 2 * * *" # 10:47 Asia/Shanghai; fallback for the Windows 10:30 task
   workflow_dispatch:
     inputs:
+      scheduled_date:
+        description: "Leave empty for manual runs; the Windows scheduler supplies YYYY-MM-DD for daily deduplication"
+        required: false
+        default: ""
+        type: string
       ensure_channel:
         description: "Explicitly open/wait for the configured channel if none exists"
         required: false
@@ -23,13 +29,35 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: fiber-windows-node-maintenance
   cancel-in-progress: false
 
 jobs:
+  daily-gate:
+    runs-on: [self-hosted, windows, x64, fiber-windows]
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.claim.outputs.should_run }}
+      is_daily: ${{ steps.claim.outputs.is_daily }}
+      scheduled_date: ${{ steps.claim.outputs.scheduled_date }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Claim the daily execution
+        id: claim
+        shell: powershell
+        env:
+          SCHEDULED_DATE: ${{ inputs.scheduled_date || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts\Claim-DailyRun.ps1
+
   maintain-node:
+    needs: daily-gate
+    if: ${{ needs.daily-gate.outputs.should_run == 'true' }}
     runs-on: [self-hosted, windows, x64, fiber-windows]
     timeout-minutes: 45
     outputs:
@@ -60,6 +88,8 @@ jobs:
         run: |
           tests\Test-Module.ps1
           tests\Test-PaymentFlowReport.ps1
+          tests\Test-DailySchedule.ps1
+          tests\Test-DailyDispatch.ps1
 
       - name: Update node A Fiber binary safely
         id: update_a
@@ -73,37 +103,37 @@ jobs:
 
       - name: Check both nodes and channels
         id: topology
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.ensure_channel }}
+        if: ${{ needs.daily-gate.outputs.is_daily == 'true' || !inputs.ensure_channel }}
         shell: powershell
         run: scripts\Test-PaymentTopology.ps1
 
       - name: Explicitly ensure node A public channel
         id: ensure_a
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
+        if: ${{ needs.daily-gate.outputs.is_daily != 'true' && github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
         run: scripts\Ensure-Channel.ps1
 
       - name: Explicitly ensure node B to node A channel
         id: ensure_b
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
+        if: ${{ needs.daily-gate.outputs.is_daily != 'true' && github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
         run: scripts\Ensure-SecondNodeChannel.ps1
 
       - name: Check newly ensured channels
         id: topology_ensured
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
+        if: ${{ needs.daily-gate.outputs.is_daily != 'true' && github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
         run: scripts\Test-PaymentTopology.ps1
 
       - name: Run scheduled payment flow
         id: payment_scheduled
-        if: ${{ github.event_name == 'schedule' }}
+        if: ${{ needs.daily-gate.outputs.is_daily == 'true' }}
         shell: powershell
         run: scripts\Send-PaymentFlow.ps1 -Scheduled
 
       - name: Run manually requested payment flow
         id: payment_manual
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_payment }}
+        if: ${{ needs.daily-gate.outputs.is_daily != 'true' && github.event_name == 'workflow_dispatch' && inputs.send_payment }}
         shell: powershell
         run: scripts\Send-PaymentFlow.ps1
 
@@ -122,8 +152,8 @@ jobs:
 
   notify-discord:
     runs-on: ubuntu-24.04
-    needs: maintain-node
-    if: ${{ always() && (github.event_name == 'schedule' || inputs.send_discord_report) }}
+    needs: [daily-gate, maintain-node]
+    if: ${{ always() && (needs.daily-gate.outputs.should_run == 'true' || needs.daily-gate.result == 'failure') && (github.event_name == 'schedule' || inputs.scheduled_date != '' || inputs.send_discord_report) }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
@@ -136,6 +166,8 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_CHANNEL_ID: "1549402632203018410"
-          FIBER_REPORT_JOB_RESULT: ${{ needs.maintain-node.result }}
+          FIBER_REPORT_JOB_RESULT: ${{ needs.daily-gate.result == 'failure' && 'failure' || needs.maintain-node.result }}
           FIBER_REPORT_STEPS_JSON: ${{ needs.maintain-node.outputs.steps_json }}
+          FIBER_REPORT_GATE_OUTCOME: ${{ needs.daily-gate.result }}
+          FIBER_REPORT_IS_DAILY: ${{ github.event_name == 'schedule' || inputs.scheduled_date != '' }}
         run: python3 scripts/send_daily_smoke_report.py

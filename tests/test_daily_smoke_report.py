@@ -109,9 +109,25 @@ class PayloadTests(unittest.TestCase):
     def test_actual_start_does_not_invent_delay_or_scheduled_date(self):
         overview = fields(report.payload_from_env(complete_env()))["Run overview"]
         self.assertIn("Scheduled run · Started 2026-09-15 08:02:03 CST", overview)
-        self.assertNotIn("08:01", overview)
+        self.assertNotIn("10:30", overview)
         self.assertNotIn("Delay", overview)
         self.assertNotIn("Scheduled 2026", overview)
+
+    def test_windows_dispatch_is_reported_as_a_daily_run(self):
+        env = complete_env()
+        env.update({"GITHUB_EVENT_NAME": "workflow_dispatch", "FIBER_REPORT_IS_DAILY": "true", "FIBER_REPORT_GATE_OUTCOME": "success"})
+        rendered = fields(report.payload_from_env(env))
+        self.assertIn("Scheduled run", rendered["Run overview"])
+        self.assertNotIn("Manual run", rendered["Run overview"])
+        self.assertIn("Preflight passed", rendered["Checks"])
+
+    def test_daily_gate_failure_is_visible_without_payment_results(self):
+        env = complete_env({})
+        env.update({"FIBER_REPORT_JOB_RESULT": "failure", "FIBER_REPORT_GATE_OUTCOME": "failure"})
+        payload = report.payload_from_env(env)
+        self.assertEqual(payload["embeds"][0]["color"], report.FAILURE_COLOR)
+        self.assertIn("Daily execution gate", fields(payload)["Checks"])
+        self.assertNotIn("3/3", payload["embeds"][0]["description"])
 
     def test_manual_payment_and_ensure_steps(self):
         steps = complete_steps()

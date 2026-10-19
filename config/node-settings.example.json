@@ -1,7 +1,7 @@
 {
   "installRoot": "C:\\fiber-node",
   "repository": "nervosnetwork/fiber",
-  "releaseChannel": "prerelease",
+  "releaseChannel": "stable",
   "releaseTag": "",
   "serviceName": "FiberNode",
   "rpcUrl": "http://127.0.0.1:8227",

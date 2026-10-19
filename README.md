@@ -16,10 +16,10 @@
 
 Workflow：[`.github/workflows/fiber-node-maintenance.yml`](.github/workflows/fiber-node-maintenance.yml)
 
-每天北京时间 **08:01** 自动执行：
+每天北京时间 **10:30** 由 Windows 任务计划程序主动触发，GitHub **10:47** 的 cron 作为兜底。安装方式见[定时调度说明](docs/daily-scheduler.md)。执行内容：
 
 1. 检查所有 PowerShell 脚本语法并运行模块单元测试。
-2. 检查 Node A、Node B 是否有更新的 Fiber prerelease；有更新时校验 SHA-256、执行数据库兼容性预检并安全替换二进制。
+2. 检查 Node A、Node B 是否有更新的 Fiber 稳定版；有更新时校验 SHA-256、执行数据库兼容性预检并安全替换二进制。
 3. 检查两个 Windows 服务、RPC、peer 连接和两条 `ChannelReady` channel。
 4. Node A 创建 `0.02 CKB` invoice，由 Node B 支付。
 5. Node A 向测试网公共节点 `CkbaNode-1` keysend `0.01 CKB`。
@@ -28,6 +28,12 @@ Workflow：[`.github/workflows/fiber-node-maintenance.yml`](.github/workflows/fi
 8. 执行结束后向 Discord 发送汇总卡片，包括运行状态、节点版本、前置检查和三笔支付明细；失败时也发送。
 
 自动升级不会创建新 channel。需要数据库 migration 的版本会拒绝自动升级，不会直接修改现有数据。
+
+更新仅选择 GitHub 标记为正式发布的稳定版，排除 RC、其他 prerelease 和 draft。示例配置使用 `releaseChannel: "stable"`；Windows 上现有的 `releaseChannel: "prerelease"` 配置会在读取时按 `stable` 处理，无需先手动修改机器配置。
+
+`releaseTag` 留空时自动跟踪最新稳定版；填写稳定版 tag 时固定使用该版本。指定 prerelease 或 draft tag 会在下载二进制、停止服务之前报错。
+
+两个调度入口共用 Windows 上的每日执行记录，同一天只自动执行一次烟测及通知。失败后不会自动重复支付；同一天可以显式重新运行原 run，跨日恢复则使用普通手动运行。服务器离线、网络或 runner 排队仍可能推迟实际开跑时间。
 
 ## CI 如何判断成功
 
@@ -54,6 +60,7 @@ B -> A -> CkbaNode-1  B -(0.03 CKB + fee)   A +fee   CkbaNode-1 +0.03 CKB
 在 GitHub Actions 页面选择 `Fiber Windows node maintenance`，点击 **Run workflow**。通常手动验证使用：
 
 ```text
+scheduled_date: 留空
 ensure_channel: false
 send_payment:   true
 send_discord_report: true
@@ -63,9 +70,11 @@ send_discord_report: true
 
 `send_discord_report` 只控制手动运行是否发报告，默认关闭；定时运行始终尝试发送。该开关本身不会触发支付。
 
+`scheduled_date` 由 Windows 调度器填写，用于每日去重；普通手动运行请留空。携带日期的每日任务按 `-Scheduled` 执行支付并尊重 `paymentFlow.enabled`，不需要勾选 `send_payment`。
+
 ## Discord 日报配置
 
-目标频道 ID：`1549402632203018410`。使用与 `cch-daily-smoke` 相同的 Discord Webhook 卡片方式，**只需配置一个 Secret**：
+目标频道 ID：`1549402632203018410`。使用与 `cch-daily-smoke` 相同的 Discord Webhook 卡片方式，**Discord 通知只需配置一个 Secret**（Windows 调度另需专用凭据，见[调度说明](docs/daily-scheduler.md)）：
 
 1. 在 Discord 目标频道打开 **编辑频道 → 整合 → Webhooks → 新建 Webhook**，确认所选频道正确并复制 Webhook URL。创建者需要该频道的 **管理 Webhooks** 权限，详见 [Discord 官方说明](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks)。
 2. 打开 [本仓库的 Actions Secrets 设置](https://github.com/sunchengzhu/fiber-windows-smoke/settings/secrets/actions)，选择 **New repository secret**：
@@ -86,7 +95,7 @@ Webhook URL 已绑定频道，频道 ID 本身不是发送凭据；不需要 Bot
 - 原支付脚本把已经通过断言的金额、余额、手续费和 Payment Hash 同时写到 GitHub Job Summary 和结构化步骤输出。Discord 直接复用这些结果，不会再执行支付或查询节点。
 - 独立 Ubuntu 通知 job 在 Windows job 结束后发送简报：总体结果与耗时、北京时间的实际开始时间、FNN 版本、检查结论，以及三条资金流。A/B 版本相同则合并展示；分支/commit 仅在非 `main` 运行时展示，重跑会标注次数。
 - 三笔支付合并到一个区块，每笔只显示类型、路径、金额和 CKB 手续费；前后余额、逐项断言、shannons/费率、Payment Hash 保留在执行日志和 GitHub Job Summary，点击卡片标题查看。只有三笔结果齐全时才显示余额与手续费验证通过。
-- 计划时间为北京时间 **08:01**；GitHub 的 cron 可能延迟。卡片标注定时或手动触发及实际开始时间，不重复展示固定计划时间，也不将计划时刻当成实际执行时间。
+- 主调度计划时间为北京时间 **10:30**，GitHub **10:47** cron 兜底可能延迟。卡片标注定时或手动触发及实际开始时间，不将计划时刻当成实际执行时间。重复或过期任务跳过烟测及 Discord。
 - 前置检查正常时只显示一句通过；异常时展示未通过、取消、跳过或状态未知的检查，正常步骤省略。
 - 支付全部完成并通过断言后才导出三笔明细。流程中途失败时，卡片显示失败步骤并提示明细未生成，通过 Actions 链接查看日志，不推测某一笔是否已经发送或通过。
 - 定时运行遇到 `paymentFlow.enabled=false` 会显示支付已禁用；手动运行没有请求支付时会显示跳过。都不会显示 `3/3` 通过。该配置只限制定时支付，手动 `send_payment=true` 仍按原有行为执行支付。
@@ -107,6 +116,8 @@ PowerShell 检查：
 tests\Test-PowerShellSyntax.ps1
 tests\Test-Module.ps1
 tests\Test-PaymentFlowReport.ps1
+tests\Test-DailySchedule.ps1
+tests\Test-DailyDispatch.ps1
 ```
 
 `--dry-run` 只输出 JSON 卡片预览，可通过 `FIBER_REPORT_JOB_RESULT`、`FIBER_REPORT_STEPS_JSON` 和 GitHub 上下文环境变量输入运行数据；不提供输入时明确显示数据不可用。

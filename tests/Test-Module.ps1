@@ -209,4 +209,98 @@ if ($rfcAddress -ne "ckb1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqd
     throw "ConvertTo-CkbAddress does not match the RFC 0021 full address example: $rfcAddress"
 }
 
-Write-Host "Module unit checks passed"
+$releaseTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("fiber-release-test-" + [Guid]::NewGuid().ToString("N"))
+try {
+    New-Item -ItemType Directory -Path $releaseTestRoot | Out-Null
+    $examplePath = Join-Path (Split-Path -Parent $PSScriptRoot) "config/node-settings.example.json"
+    $fixtureSettings = Get-Content -LiteralPath $examplePath -Raw | ConvertFrom-Json
+    if ($fixtureSettings.releaseChannel -ne "stable" -or $fixtureSettings.releaseTag -ne "") {
+        throw "Example settings must track stable releases without a pinned tag"
+    }
+    $fixtureSettings.installRoot = Join-Path $releaseTestRoot "node"
+    $fixturePath = Join-Path $releaseTestRoot "settings.json"
+    foreach ($channel in @("stable", "prerelease")) {
+        $fixtureSettings.releaseChannel = $channel
+        $fixtureSettings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $fixturePath -Encoding UTF8
+        $importedSettings = Import-FiberSettings -SettingsPath $fixturePath -WarningAction SilentlyContinue
+        if ($importedSettings.releaseChannel -ne "stable") {
+            throw "Imported '$channel' settings must use stable releases"
+        }
+    }
+
+    # Mock the GitHub boundary inside the production module; these checks cannot
+    # download binaries, stop services, or access Fiber nodes.
+    & (Get-Module FiberWindows) {
+        function script:Invoke-RestMethod {
+            param([string]$Uri, [hashtable]$Headers, [switch]$UseBasicParsing)
+            if ($Uri -notlike "https://api.github.com/repos/fixture/fiber/releases*") {
+                throw "Unexpected GitHub request in release policy test: $Uri"
+            }
+            return $script:releasePolicyResponse
+        }
+
+        try {
+            $settings = [pscustomobject]@{
+                repository = "fixture/fiber"
+                releaseChannel = "stable"
+                releaseTag = ""
+            }
+            $releases = @(
+                [pscustomobject]@{ tag_name = "v0.9.0"; draft = $false; prerelease = $false; published_at = "2026-08-06T02:39:29Z" },
+                [pscustomobject]@{ tag_name = "v0.10.0-rc1"; draft = $false; prerelease = $true; published_at = "2026-09-25T05:17:12Z" },
+                [pscustomobject]@{ tag_name = "v0.10.0"; draft = $true; prerelease = $false; published_at = "2026-10-01T00:00:00Z" },
+                [pscustomobject]@{ tag_name = "v0.9.1"; draft = $false; prerelease = $false; published_at = "2026-09-11T08:09:37Z" }
+            )
+            $script:releasePolicyResponse = $releases
+            foreach ($channel in @("stable", "prerelease")) {
+                $settings.releaseChannel = $channel
+                $selected = Get-FiberRelease -Settings $settings
+                if ($selected.tag_name -ne "v0.9.1") {
+                    throw "Release policy selected '$($selected.tag_name)' for '$channel', expected the latest stable release"
+                }
+            }
+
+            $settings.releaseTag = "v0.9.1"
+            $script:releasePolicyResponse = $releases[3]
+            $selected = Get-FiberRelease -Settings $settings
+            if ($selected.tag_name -ne "v0.9.1") {
+                throw "Pinned stable release was not preserved"
+            }
+
+            foreach ($release in @($releases[1], $releases[2])) {
+                $settings.releaseTag = $release.tag_name
+                $script:releasePolicyResponse = $release
+                $rejected = $false
+                try {
+                    Get-FiberRelease -Settings $settings | Out-Null
+                }
+                catch {
+                    if ($_.Exception.Message -notlike "*only stable releases are supported*") { throw }
+                    $rejected = $true
+                }
+                if (-not $rejected) { throw "Pinned draft/prerelease '$($release.tag_name)' was accepted" }
+            }
+
+            $settings.releaseTag = ""
+            $script:releasePolicyResponse = @($releases[1], $releases[2])
+            $rejected = $false
+            try {
+                Get-FiberRelease -Settings $settings | Out-Null
+            }
+            catch {
+                if ($_.Exception.Message -notlike "*No stable Fiber release found*") { throw }
+                $rejected = $true
+            }
+            if (-not $rejected) { throw "Release selection must fail when no stable release exists" }
+        }
+        finally {
+            Remove-Item Function:script:Invoke-RestMethod
+            Remove-Variable -Name releasePolicyResponse -Scope Script -ErrorAction SilentlyContinue
+        }
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $releaseTestRoot) { Remove-Item -LiteralPath $releaseTestRoot -Recurse -Force }
+}
+
+Write-Host "Module unit checks passed (including stable-only release policy)"
