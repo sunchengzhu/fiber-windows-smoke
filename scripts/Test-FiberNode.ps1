@@ -26,6 +26,10 @@ $nodeInfo = Wait-FiberRpc -Settings $settings -TimeoutSeconds 60
 $ckbAddress = ConvertTo-CkbAddress -Script $nodeInfo.default_funding_lock_script -Network testnet
 $binaryVersion = Get-ExecutableVersion -Path $paths.Fnn
 $peers = Invoke-FiberRpc -Settings $settings -Method "list_peers"
+$peerConnected = @($peers.peers | Where-Object {
+    [string]::Equals([string]$_.pubkey, [string]$settings.peer.pubkey,
+        [System.StringComparison]::OrdinalIgnoreCase)
+}).Count -gt 0
 $channels = @(Get-PeerChannels -Settings $settings)
 $readyChannels = @($channels | Where-Object { Test-ChannelReady -Channel $_ })
 
@@ -33,7 +37,7 @@ if ($Compact) {
     if ([string]::IsNullOrWhiteSpace($Label)) {
         $Label = [string]$settings.peer.name
     }
-    $healthStatus = if ($readyChannels.Count -gt 0) {
+    $healthStatus = if ($readyChannels.Count -gt 0 -and $peerConnected) {
         "OK"
     }
     elseif ($AllowPending) {
@@ -89,6 +93,9 @@ else {
     }
 }
 
+if (-not $peerConnected -and -not $AllowPending) {
+    throw "Configured peer $($settings.peer.pubkey) is disconnected; ChannelReady alone does not mean the channel is usable"
+}
 if ($readyChannels.Count -eq 0 -and -not $AllowPending) {
     throw "No ChannelReady channel exists for peer $($settings.peer.pubkey)"
 }
@@ -97,6 +104,6 @@ if ($readyChannels.Count -eq 0) {
         Write-Warning "No ready channel yet, but -AllowPending was specified"
     }
 }
-elseif (-not $Compact) {
+elseif (-not $Compact -and $peerConnected) {
     Write-Host "Health check passed"
 }

@@ -178,6 +178,8 @@ def _preflight_summary(report: Mapping[str, Any]) -> str:
     if report.get("gate_outcome") is not None:
         checks.insert(0, ("daily_gate", "Daily execution gate"))
         steps = {**steps, "daily_gate": {"outcome": report["gate_outcome"]}}
+    if "reconnect" in steps:
+        checks.append(("reconnect", "Payment peer connection"))
     if any(_step(steps, key).get("outcome") not in {None, "skipped"} for key in ("ensure_a", "ensure_b")):
         checks += [("ensure_a", "Node A channel"), ("ensure_b", "Node B channel"), ("topology_ensured", "Topology")]
     else:

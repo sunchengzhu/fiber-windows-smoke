@@ -574,6 +574,41 @@ function Get-ChannelStateName {
     return "Unknown"
 }
 
+function Test-FiberPeerConnected {
+    param([Parameter(Mandatory = $true)][object]$Settings)
+    $result = Invoke-FiberRpc -Settings $Settings -Method "list_peers"
+    return @($result.peers | Where-Object {
+        [string]::Equals([string]$_.pubkey, [string]$Settings.peer.pubkey,
+            [System.StringComparison]::OrdinalIgnoreCase)
+    }).Count -gt 0
+}
+
+function Wait-FiberPeerConnected {
+    param(
+        [Parameter(Mandatory = $true)][object]$Settings,
+        [ValidateRange(1, 600)][int]$TimeoutSeconds = 60
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $connectParams = @{ save = $true }
+    $address = [string](Get-ObjectPropertyValue -Object $Settings.peer -Name "address" -Default "")
+    if ([string]::IsNullOrWhiteSpace($address)) {
+        $connectParams.pubkey = [string]$Settings.peer.pubkey
+        $connectParams.addr_type = "tcp"
+    }
+    else { $connectParams.address = $address }
+    do {
+        if (Test-FiberPeerConnected -Settings $Settings) { return }
+        Write-Host "Reconnecting configured peer $($Settings.peer.pubkey)"
+        try { Invoke-FiberRpc -Settings $Settings -Method "connect_peer" -Params @($connectParams) | Out-Null }
+        catch { Write-Warning "Peer connection request failed; waiting for the configured peer" }
+        # connect_peer only accepts a dial request; list_peers confirms the expected identity.
+        Start-Sleep -Seconds 2
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if (-not (Test-FiberPeerConnected -Settings $Settings)) {
+        throw "Configured peer $($Settings.peer.pubkey) is disconnected after $TimeoutSeconds seconds"
+    }
+}
+
 function Get-PeerChannels {
     param(
         [Parameter(Mandatory = $true)]
@@ -751,7 +786,9 @@ Export-ModuleMember -Function @(
     "Start-FiberService",
     "Stop-FiberService",
     "Test-ChannelReady",
+    "Test-FiberPeerConnected",
     "Test-FiberPeerInitPendingError",
     "Wait-FiberRpc",
+    "Wait-FiberPeerConnected",
     "Wait-PeerChannelReady"
 )
