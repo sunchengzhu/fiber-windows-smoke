@@ -97,8 +97,12 @@ function Confirm-InstalledNodes {
     }
     & (Join-Path $PSScriptRoot 'Connect-PaymentPeers.ps1')
     foreach ($node in $nodes) {
-        $beforeChannels = @(Get-Content -LiteralPath (Join-Path $BackupDirectory "node-$($node.Name)\channels-before.json") -Raw | ConvertFrom-Json)
+        # Windows PowerShell 5.1 returns a JSON array as one pipeline object.
+        # Assign it first, then expand its elements with @(), as for releases.
+        $beforeResponse = Get-Content -LiteralPath (Join-Path $BackupDirectory "node-$($node.Name)\channels-before.json") -Raw | ConvertFrom-Json
+        $beforeChannels = @($beforeResponse)
         $after = @((Invoke-FiberRpc -Settings $node.Settings -Method 'list_channels' -Params @(@{})).channels)
+        Write-Host "Node $($node.Name): channel count before=$($beforeChannels.Count), after=$($after.Count)"
         if ($after.Count -ne $beforeChannels.Count) { throw 'Channel count changed after migration' }
         foreach ($before in $beforeChannels) {
             $matched = @($after | Where-Object { $_.channel_id -eq $before.channel_id })
