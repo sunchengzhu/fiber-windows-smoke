@@ -6,6 +6,22 @@ on:
     - cron: "47 2 * * *" # 10:47 Asia/Shanghai; fallback for the Windows 10:30 task
   workflow_dispatch:
     inputs:
+      manual_upgrade:
+        description: "Run the explicitly requested manual maintenance operation instead of smoke"
+        required: false
+        default: false
+        type: boolean
+      upgrade_operation:
+        description: "Manual maintenance operation"
+        required: false
+        default: Inspect
+        type: choice
+        options: [Inspect, Upgrade]
+      upgrade_release:
+        description: "Explicit stable release for manual maintenance"
+        required: false
+        default: v0.10.1
+        type: string
       scheduled_date:
         description: "Leave empty for manual runs; the Windows scheduler supplies YYYY-MM-DD for daily deduplication"
         required: false
@@ -36,7 +52,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  manual-upgrade:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.manual_upgrade }}
+    runs-on: [self-hosted, windows, x64, fiber-windows]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Validate maintenance script syntax
+        shell: powershell
+        run: tests\Test-PowerShellSyntax.ps1
+      - name: Run explicitly requested maintenance
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UPGRADE_OPERATION: ${{ inputs.upgrade_operation }}
+          UPGRADE_RELEASE: ${{ inputs.upgrade_release }}
+        run: scripts\Invoke-ManualNodeUpgrade.ps1 -Operation $env:UPGRADE_OPERATION -ReleaseTag $env:UPGRADE_RELEASE
+
   daily-gate:
+    if: ${{ !inputs.manual_upgrade }}
     runs-on: [self-hosted, windows, x64, fiber-windows]
     timeout-minutes: 5
     outputs:
