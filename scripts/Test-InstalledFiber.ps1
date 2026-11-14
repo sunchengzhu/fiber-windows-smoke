@@ -120,6 +120,8 @@ finally {
         "report=$json" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
     }
     $heading = switch ($report.status) { 'match' { 'Installed Fiber versions verified' }; 'mismatch' { 'FIBER VERSION MISMATCH - payments blocked' }; default { 'FIBER VERSION CHECK FAILED - payments blocked' } }
+    if ($report.status -eq 'match' -and $report.freshness -eq 'update_available') { $heading = 'FIBER UPDATE AVAILABLE - installed baseline verified' }
+    elseif ($report.status -eq 'match' -and $report.freshness -eq 'unknown') { $heading = 'Latest stable version UNKNOWN - installed baseline verified' }
     $lines = @(
         "## $heading", '',
         "CI expected: $(Format-VersionValue $report.expected.tag) / $(Format-VersionValue $report.expected.commit)",

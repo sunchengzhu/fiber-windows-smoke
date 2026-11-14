@@ -9,7 +9,11 @@ $saved = @{}
 foreach ($name in $names) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 try {
     New-Item -ItemType Directory -Path $tempRoot | Out-Null
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'scripts/Test-InstalledFiber.ps1') -Destination $tempRoot
+    # Keep the fixture in its own module namespace so later production-module
+    # tests still see exactly one FiberWindows module in this PowerShell host.
+    $production = Get-Content -LiteralPath (Join-Path $projectRoot 'scripts/Test-InstalledFiber.ps1') -Raw
+    $production.Replace("'FiberWindows.psm1'", "'FiberVersionFixture.psm1'") |
+        Set-Content -LiteralPath (Join-Path $tempRoot 'Test-InstalledFiber.ps1') -Encoding UTF8
     @'
 Set-StrictMode -Version Latest
 function Import-FiberSettings {
@@ -46,7 +50,7 @@ function Get-LatestStableFiberRelease {
     if ($env:FIBER_VERSION_TEST_CASE -eq 'lookup-failed') { throw 'Offline GitHub outage' }
     return [pscustomobject]@{ tag_name = $(if ($env:FIBER_VERSION_TEST_CASE -eq 'new-stable') { 'v0.11.0' } else { 'v0.10.1' }) }
 }
-'@ | Set-Content -LiteralPath (Join-Path $tempRoot 'FiberWindows.psm1') -Encoding UTF8
+'@ | Set-Content -LiteralPath (Join-Path $tempRoot 'FiberVersionFixture.psm1') -Encoding UTF8
     $manifest = Join-Path $tempRoot 'release.json'
     Copy-Item -LiteralPath (Join-Path $projectRoot 'config/tested-fiber-release.json') -Destination $manifest
     $cases = @{
@@ -88,12 +92,15 @@ function Get-LatestStableFiberRelease {
         $summary = Get-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Raw
         if ($summary -notlike '*Latest stable:*' -or $summary -notlike '*Installed CLI*') { throw "${case}: summary lacks version context" }
         if ($case -eq 'cli-mismatch' -and $summary -notlike '*fnn-cli 0.10.0-rc3*') { throw 'Mismatch summary omitted the actual stale CLI version' }
+        if ($case -eq 'new-stable' -and -not $summary.StartsWith('## FIBER UPDATE AVAILABLE')) { throw 'New stable release must be a summary headline' }
+        if ($case -eq 'lookup-failed' -and -not $summary.StartsWith('## Latest stable version UNKNOWN')) { throw 'Unknown release freshness must be a summary headline' }
         $trace = Get-Content -LiteralPath $env:FIBER_VERSION_TEST_TRACE -Raw
         if ($trace -notlike '*rpc:B*') { throw "${case}: node B RPC was not checked" }
     }
     Write-Host "Installed Fiber version checks passed ($($cases.Count) offline full-script cases)"
 }
 finally {
+    Remove-Module FiberVersionFixture -Force -ErrorAction SilentlyContinue
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
 }
