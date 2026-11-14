@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
-    [ValidateSet("Inspect", "Rehearse", "Upgrade")]
+    [ValidateSet("Inspect", "Rehearse", "Upgrade", "Verify")]
     [string]$Operation = "Inspect",
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+$')]
@@ -17,6 +17,8 @@ $nodes = @(
     [pscustomobject]@{ Name = "A"; SettingsFile = "C:\fiber-node\automation\settings.json" },
     [pscustomobject]@{ Name = "B"; SettingsFile = "C:\fiber-node-b\automation\settings.json" }
 )
+$env:FIBER_WINDOWS_SETTINGS = $nodes[0].SettingsFile
+$env:FIBER_WINDOWS_SECONDARY_SETTINGS = $nodes[1].SettingsFile
 foreach ($node in $nodes) {
     $settings = Import-FiberSettings -SettingsPath $node.SettingsFile
     $paths = Get-FiberPaths -Settings $settings
@@ -74,6 +76,54 @@ if ($Operation -eq "Inspect") {
     & $newFnn --help
     if ($LASTEXITCODE -ne 0) { throw "Target executable help failed" }
     return
+}
+
+function Confirm-InstalledNodes {
+    param([string]$BackupDirectory)
+    if (-not (Test-Path -LiteralPath (Join-Path $BackupDirectory 'BACKUP_COMPLETE'))) { throw 'Complete backup marker missing' }
+    foreach ($node in $nodes) {
+        $saved = Join-Path $BackupDirectory "node-$($node.Name)"
+        $beforeInfo = Get-Content -LiteralPath (Join-Path $saved 'node-info-before.json') -Raw | ConvertFrom-Json
+        $info = Wait-FiberRpc -Settings $node.Settings -TimeoutSeconds 180
+        if ($info.version -ne $ReleaseTag.Substring(1)) { throw 'RPC version differs from the requested release' }
+        if ($info.pubkey -ne $beforeInfo.pubkey) { throw 'Node identity changed' }
+        foreach ($pair in @(@($node.Paths.Fnn, $newFnn), @($node.Paths.Cli, $newCli))) {
+            if ((Get-FileHash -LiteralPath $pair[0]).Hash -ne (Get-FileHash -LiteralPath $pair[1]).Hash) { throw 'Installed release binary hash mismatch' }
+        }
+        foreach ($relative in @('ckb\key', 'fiber\sk', 'config.yml')) {
+            if ((Get-FileHash -LiteralPath (Join-Path $node.Paths.Data $relative)).Hash -ne (Get-FileHash -LiteralPath (Join-Path "$saved\data" $relative)).Hash) { throw 'Node key or configuration differs from pre-upgrade backup' }
+        }
+        Write-Host "Node $($node.Name) healthy: version=$($info.version), commit=$($info.commit_hash), pubkey unchanged"
+    }
+    & (Join-Path $PSScriptRoot 'Connect-PaymentPeers.ps1')
+    foreach ($node in $nodes) {
+        $beforeChannels = @(Get-Content -LiteralPath (Join-Path $BackupDirectory "node-$($node.Name)\channels-before.json") -Raw | ConvertFrom-Json)
+        $after = @((Invoke-FiberRpc -Settings $node.Settings -Method 'list_channels' -Params @(@{})).channels)
+        if ($after.Count -ne $beforeChannels.Count) { throw 'Channel count changed after migration' }
+        foreach ($before in $beforeChannels) {
+            $matched = @($after | Where-Object { $_.channel_id -eq $before.channel_id })
+            if ($matched.Count -ne 1) { throw 'Original channel missing after migration' }
+            foreach ($field in @('local_balance', 'remote_balance')) {
+                if ($matched[0].$field -ne $before.$field) { throw 'Channel balance changed across offline migration' }
+            }
+        }
+        Write-Host "Node $($node.Name): all original channel IDs and balances preserved"
+    }
+    & (Join-Path $PSScriptRoot 'Test-PaymentTopology.ps1')
+    Set-Content -LiteralPath (Join-Path $BackupDirectory 'UPGRADE_COMPLETE') -Value $ReleaseTag -Encoding ASCII
+    Write-Host "MANUAL UPGRADE COMPLETE: $ReleaseTag; backup=$BackupDirectory"
+    if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
+        @"
+Manual upgrade to $ReleaseTag completed for both Windows nodes.
+
+- Complete data, keys, configuration, service wrappers, binaries, and settings backed up with SHA-256 verification.
+- Both database copies rehearsed and validated before migrating the live stores.
+- Both live stores validated; node identities, channel IDs, and balances preserved.
+- Both Windows services, RPC, and payment topology passed.
+- Protected server-local backup: ``$BackupDirectory``
+- Payment smoke is a separate explicitly requested run.
+"@ | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding UTF8 -Append
+    }
 }
 
 function Copy-VerifiedTree {
@@ -192,6 +242,15 @@ if ($Operation -eq 'Rehearse') {
 $targetVersion = $ReleaseTag.Substring(1)
 if ((Get-ExecutableVersion -Path $newFnn) -notlike "fnn Fiber $ReleaseTag *") { throw "Target FNN version differs from requested release" }
 if ((Get-ExecutableVersion -Path $newCli) -ne "fnn-cli $targetVersion") { throw "Target CLI version differs from requested release" }
+if ($Operation -eq 'Verify') {
+    $savedBackups = @(Get-ChildItem -LiteralPath 'C:\fiber-maintenance\backups' -Directory |
+        Where-Object { $_.Name -like "*-$ReleaseTag-*" -and (Test-Path -LiteralPath (Join-Path $_.FullName 'BACKUP_COMPLETE')) } |
+        Sort-Object Name -Descending)
+    if ($savedBackups.Count -eq 0) { throw 'A complete pre-upgrade backup is required for verification' }
+    Confirm-InstalledNodes -BackupDirectory $savedBackups[0].FullName
+    $global:LASTEXITCODE = 0
+    return
+}
 foreach ($node in $nodes) {
     if ([string](Get-Service -Name $node.Settings.serviceName).Status -ne 'Running') { throw "Both services must initially be running" }
     if ([version]$node.BeforeInfo.version -ge [version]$targetVersion) { throw "Manual upgrade requires an older installed version; refusing a downgrade or repeated migration" }
@@ -280,40 +339,7 @@ try {
     # channel state could have advanced. Post-start failures retain migrated data.
     $networkMayHaveAdvanced = $true
     foreach ($node in $nodes) { Start-FiberService -ServiceName $node.Settings.serviceName }
-    foreach ($node in $nodes) {
-        $info = Wait-FiberRpc -Settings $node.Settings -TimeoutSeconds 180
-        if ($info.version -ne $targetVersion) { throw "RPC version differs from the requested release" }
-        if ($info.pubkey -ne $node.BeforeInfo.pubkey) { throw "Node identity changed" }
-        Write-Host "Node $($node.Name) healthy: version=$($info.version), commit=$($info.commit_hash), pubkey unchanged"
-    }
-    & (Join-Path $PSScriptRoot 'Connect-PaymentPeers.ps1')
-    foreach ($node in $nodes) {
-        $after = @((Invoke-FiberRpc -Settings $node.Settings -Method 'list_channels' -Params @(@{})).channels)
-        if ($after.Count -ne $node.BeforeChannels.Count) { throw "Channel count changed after migration" }
-        foreach ($before in $node.BeforeChannels) {
-            $matched = @($after | Where-Object { $_.channel_id -eq $before.channel_id })
-            if ($matched.Count -ne 1) { throw "Original channel missing after migration" }
-            foreach ($field in @('local_balance', 'remote_balance')) {
-                if ($matched[0].$field -ne $before.$field) { throw "Channel balance changed across offline migration" }
-            }
-        }
-        Write-Host "Node $($node.Name): all original channel IDs and balances preserved"
-    }
-    & (Join-Path $PSScriptRoot 'Test-PaymentTopology.ps1')
-    Set-Content -LiteralPath (Join-Path $backupRoot 'UPGRADE_COMPLETE') -Value $ReleaseTag -Encoding ASCII
-    Write-Host "MANUAL UPGRADE COMPLETE: $ReleaseTag; backup=$backupRoot"
-    if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
-        @"
-Manual upgrade to $ReleaseTag completed for both Windows nodes.
-
-- Complete data, keys, configuration, service wrappers, binaries, and settings backed up with SHA-256 verification.
-- Both database copies rehearsed and validated before migrating the live stores.
-- Both live stores validated; node identities, channel IDs, and balances preserved.
-- Both Windows services, RPC, and payment topology passed.
-- Protected server-local backup: ``$backupRoot``
-- Payment smoke is a separate explicitly requested run.
-"@ | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding UTF8 -Append
-    }
+    Confirm-InstalledNodes -BackupDirectory $backupRoot
 }
 catch {
     $failure = $_

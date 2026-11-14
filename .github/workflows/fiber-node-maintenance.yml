@@ -16,7 +16,7 @@ on:
         required: false
         default: Inspect
         type: choice
-        options: [Inspect, Rehearse, Upgrade]
+        options: [Inspect, Rehearse, Upgrade, Verify]
       upgrade_release:
         description: "Explicit stable release for manual maintenance"
         required: false
