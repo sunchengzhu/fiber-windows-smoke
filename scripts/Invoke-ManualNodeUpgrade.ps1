@@ -126,7 +126,12 @@ function Invoke-OfflineFnn {
         $null = $process.Start()
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
-        $process.StandardInput.WriteLine('y')
+        # Windows PowerShell/.NET can prefix StreamWriter input with a BOM;
+        # Rust's confirmation reader then sees BOM+y and treats it as cancel.
+        # Send the already-authorized confirmation as raw ASCII bytes.
+        $confirmation = [System.Text.Encoding]::ASCII.GetBytes("y`n")
+        $process.StandardInput.BaseStream.Write($confirmation, 0, $confirmation.Length)
+        $process.StandardInput.BaseStream.Flush()
         $process.StandardInput.Close()
         if (-not $process.WaitForExit(300000)) {
             $process.Kill()
@@ -308,6 +313,7 @@ catch {
         foreach ($node in $nodes) {
             Start-FiberService -ServiceName $node.Settings.serviceName
             $null = Wait-FiberRpc -Settings $node.Settings -TimeoutSeconds 180
+            Write-Host "Node $($node.Name): original service and RPC restored"
         }
     }
     throw $failure
