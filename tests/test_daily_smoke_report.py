@@ -104,8 +104,9 @@ class PayloadTests(unittest.TestCase):
         rendered = fields(payload)
         self.assertNotIn("Branch", rendered["Run overview"])
         self.assertEqual(rendered["Checks"], "✅ Preflight passed · Balances & fees verified")
-        self.assertIn("CI expected `v0.10.1`", rendered["Versions"])
-        self.assertIn("Latest stable `v0.10.1`", rendered["Versions"])
+        self.assertEqual(rendered["Versions"], "A/B `v0.10.1` · 版本一致 · 已是最新稳定版")
+        self.assertNotIn("d9b6bbd", rendered["Versions"])
+        self.assertNotIn("2026-11-14", rendered["Versions"])
         self.assertEqual(len(embed["fields"]), 4)
         self.assertEqual(len(rendered["Payments"].splitlines()), 3)
         for (_, name), scenario in zip(report.SCENARIOS, success_payment()["scenarios"]):
@@ -193,12 +194,14 @@ class PayloadTests(unittest.TestCase):
         versions = success_versions()
         versions.update(freshness="update_available", latest={"tag": "v0.11.0", "status": "ok"})
         steps["versions"]["outputs"]["report"] = json.dumps(versions)
-        embed = report.payload_from_env(complete_env(steps))["embeds"][0]
+        payload = report.payload_from_env(complete_env(steps))
+        embed = payload["embeds"][0]
         self.assertIn("发现新稳定版", embed["title"])
         self.assertIn("v0.11.0", embed["description"])
         self.assertIn("手工升级", embed["description"])
         self.assertIn("3/3 payment scenarios passed", embed["description"])
         self.assertEqual(embed["color"], report.OTHER_COLOR)
+        self.assertEqual(fields(payload)["Versions"], "A/B `v0.10.1` · 最新 `v0.11.0`（待手工升级）")
 
     def test_latest_lookup_failure_is_unknown_without_blocking_success(self):
         steps = complete_steps()
@@ -208,7 +211,7 @@ class PayloadTests(unittest.TestCase):
         payload = report.payload_from_env(complete_env(steps))
         self.assertIn("最新稳定版未知", payload["embeds"][0]["title"])
         self.assertIn("3/3 payment scenarios passed", payload["embeds"][0]["description"])
-        self.assertIn("是否最新未知", fields(payload)["Versions"])
+        self.assertEqual(fields(payload)["Versions"], "A/B `v0.10.1` · 版本一致 · 最新稳定版未知")
 
     def test_broken_version_json_is_visible(self):
         steps = complete_steps()

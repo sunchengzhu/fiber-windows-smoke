@@ -163,9 +163,29 @@ def _time_summary(report: Mapping[str, Any]) -> str:
 def _version_summary(report: Mapping[str, Any]) -> str:
     versions = _mapping(report.get("versions"))
     expected, latest = (_mapping(versions.get(key)) for key in ("expected", "latest"))
-    lines = [f"CI expected `{_truncate(_one_line(expected.get('tag')), 50)}` · `{_one_line(expected.get('commit'))[:12]}`"]
     nodes = versions.get("nodes")
     nodes = {node.get("name"): node for node in nodes if isinstance(node, Mapping) and isinstance(node.get("name"), str) and node.get("name") in {"A", "B"}} if isinstance(nodes, list) else {}
+    tag = expected.get("tag")
+    a, b = (nodes.get(name, {}) for name in ("A", "B"))
+    same_verified_versions = (
+        versions.get("status") == "match" and not report.get("versions_invalid")
+        and isinstance(tag, str) and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag)
+        and all(isinstance(a.get(key), str) and a[key] and a[key] == b.get(key)
+                for key in ("fnn_version", "cli_version", "rpc_version", "rpc_commit"))
+        and a["fnn_version"].startswith(f"fnn Fiber {tag} (")
+        and a["cli_version"] == f"fnn-cli {tag[1:]}" and a["rpc_version"] == tag[1:]
+    )
+    if same_verified_versions:
+        installed = f"A/B `{_truncate(tag, 50)}`"
+        if latest.get("status") != "ok" or versions.get("freshness") == "unknown":
+            return f"{installed} · 版本一致 · 最新稳定版未知"
+        if versions.get("freshness") == "current" and latest.get("tag") == tag:
+            return f"{installed} · 版本一致 · 已是最新稳定版"
+        if versions.get("freshness") == "update_available":
+            return f"{installed} · 最新 `{_truncate(_one_line(latest.get('tag')), 50)}`（待手工升级）"
+    # Expand the comparison when evidence is missing or a component differs.
+    # Complete binary/RPC versions and commits also remain in GitHub Summary.
+    lines = [f"CI expected `{_truncate(_one_line(expected.get('tag')), 50)}` · `{_one_line(expected.get('commit'))[:12]}`"]
     for name in ("A", "B"):
         node = nodes.get(name, {})
         lines.append(f"{name} FNN `{_truncate(_one_line(node.get('fnn_version')), 100)}` · CLI `{_truncate(_one_line(node.get('cli_version')), 60)}`")
