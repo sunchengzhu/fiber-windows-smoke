@@ -1,12 +1,16 @@
 [CmdletBinding()]
 param(
     [string]$SettingsPath,
+    [string]$ReleaseTag,
     [switch]$NoServiceControl
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
+    throw "Manual upgrade requires an explicit -ReleaseTag; back up and review compatibility before updating"
+}
 
 Import-Module (Join-Path $PSScriptRoot "FiberWindows.psm1") -Force
 $SettingsPath = Resolve-FiberSettingsPath -SettingsPath $SettingsPath -ScriptRoot $PSScriptRoot
@@ -14,7 +18,7 @@ $settings = Import-FiberSettings -SettingsPath $SettingsPath
 $paths = Get-FiberPaths -Settings $settings
 New-FiberDirectories -Paths $paths
 
-$release = Get-FiberRelease -Settings $settings
+$release = Get-FiberRelease -Settings $settings -ReleaseTag $ReleaseTag
 $asset = Get-WindowsReleaseAsset -Release $release
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("fiber-update-" + [Guid]::NewGuid().ToString("N"))
 $archivePath = Join-Path $tempRoot ([string]$asset.name)

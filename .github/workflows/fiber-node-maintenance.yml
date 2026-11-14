@@ -1,4 +1,4 @@
-name: Fiber Windows node maintenance
+name: Fiber Windows daily smoke
 run-name: ${{ inputs.scheduled_date && format('Fiber Windows smoke · {0}', inputs.scheduled_date) || (github.event_name == 'schedule' && 'Fiber Windows smoke · GitHub fallback' || 'Fiber Windows smoke · manual') }}
 
 on:
@@ -11,11 +11,6 @@ on:
         required: false
         default: ""
         type: string
-      ensure_channel:
-        description: "Explicitly open/wait for the configured channel if none exists"
-        required: false
-        default: false
-        type: boolean
       send_payment:
         description: "Run direct payments plus the node B -> node A -> CkbaNode-1 routed-fee test"
         required: false
@@ -82,26 +77,22 @@ jobs:
         shell: powershell
         run: tests\Test-PowerShellSyntax.ps1
 
+      - name: Verify installed FNN, CLI, and RPC versions
+        id: versions
+        shell: powershell
+        run: scripts\Test-InstalledFiber.ps1
+
       - name: Run module and report unit checks
         id: unit
         shell: powershell
         run: |
           tests\Test-Module.ps1
+          tests\Test-InstalledFiber.ps1
           tests\Test-PeerConnectivity.ps1
           tests\Test-PaymentFlowReport.ps1
           tests\Test-DailySchedule.ps1
           tests\Test-DailyDispatch.ps1
           tests\Test-ScheduledTaskXml.ps1
-
-      - name: Update node A Fiber binary safely
-        id: update_a
-        shell: powershell
-        run: scripts\Update-FiberBinary.ps1
-
-      - name: Update node B Fiber binary safely
-        id: update_b
-        shell: powershell
-        run: scripts\Update-FiberBinary.ps1 -SettingsPath $env:FIBER_WINDOWS_SECONDARY_SETTINGS
 
       - name: Reconnect configured payment peers
         id: reconnect
@@ -110,25 +101,6 @@ jobs:
 
       - name: Check both nodes and channels
         id: topology
-        if: ${{ needs.daily-gate.outputs.is_daily == 'true' || !inputs.ensure_channel }}
-        shell: powershell
-        run: scripts\Test-PaymentTopology.ps1
-
-      - name: Explicitly ensure node A public channel
-        id: ensure_a
-        if: ${{ needs.daily-gate.outputs.is_daily != 'true' && github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
-        shell: powershell
-        run: scripts\Ensure-Channel.ps1
-
-      - name: Explicitly ensure node B to node A channel
-        id: ensure_b
-        if: ${{ needs.daily-gate.outputs.is_daily != 'true' && github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
-        shell: powershell
-        run: scripts\Ensure-SecondNodeChannel.ps1
-
-      - name: Check newly ensured channels
-        id: topology_ensured
-        if: ${{ needs.daily-gate.outputs.is_daily != 'true' && github.event_name == 'workflow_dispatch' && inputs.ensure_channel }}
         shell: powershell
         run: scripts\Test-PaymentTopology.ps1
 
@@ -166,7 +138,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Test report rendering and delivery safeguards
-        run: python3 -m unittest discover -s tests -p 'test_daily_smoke_report.py'
+        run: python3 -m unittest discover -s tests
 
       - name: Send Discord report
         continue-on-error: true

@@ -43,16 +43,28 @@ def success_payment():
     }
 
 
+def success_versions():
+    return {
+        "status": "match",
+        "expected": {"tag": "v0.10.1", "commit": "d9b6bbd74faf5b168244e3ddea5b6762a04e0a71"},
+        "latest": {"tag": "v0.10.1", "status": "ok"},
+        "freshness": "current",
+        "nodes": [{"name": name, "fnn_version": "fnn Fiber v0.10.1 (d9b6bbd 2026-11-14)",
+                   "cli_version": "fnn-cli 0.10.1", "rpc_version": "0.10.1",
+                   "rpc_commit": "d9b6bbd 2026-11-14", "problems": []} for name in ("A", "B")],
+        "errors": [],
+    }
+
+
 def complete_steps():
     steps = {
         key: {"outcome": "success", "outputs": {}}
-        for key in ("checkout", "initialize_report", "syntax", "unit", "update_a", "update_b", "topology", "payment_scheduled", "timing")
+        for key in ("checkout", "initialize_report", "syntax", "unit", "versions", "reconnect", "topology", "payment_scheduled", "timing")
     }
-    steps.update({key: {"outcome": "skipped", "outputs": {}} for key in ("ensure_a", "ensure_b", "topology_ensured", "payment_manual")})
+    steps.update({key: {"outcome": "skipped", "outputs": {}} for key in ("payment_manual",)})
     steps["initialize_report"]["outputs"]["started_at"] = "2026-09-15T00:02:03Z"
     steps["timing"]["outputs"]["duration_seconds"] = "125.2"
-    steps["update_a"]["outputs"]["fnn_version"] = "fnn 0.9.1"
-    steps["update_b"]["outputs"]["fnn_version"] = "fnn 0.9.1"
+    steps["versions"]["outputs"]["report"] = json.dumps(success_versions())
     steps["payment_scheduled"]["outputs"]["report"] = json.dumps(success_payment())
     return steps
 
@@ -92,8 +104,9 @@ class PayloadTests(unittest.TestCase):
         rendered = fields(payload)
         self.assertNotIn("Branch", rendered["Run overview"])
         self.assertEqual(rendered["Checks"], "✅ Preflight passed · Balances & fees verified")
-        self.assertIn("FNN (Node A/B) `fnn 0.9.1`", rendered["Run overview"])
-        self.assertEqual(len(embed["fields"]), 3)
+        self.assertIn("CI expected `v0.10.1`", rendered["Versions"])
+        self.assertIn("Latest stable `v0.10.1`", rendered["Versions"])
+        self.assertEqual(len(embed["fields"]), 4)
         self.assertEqual(len(rendered["Payments"].splitlines()), 3)
         for (_, name), scenario in zip(report.SCENARIOS, success_payment()["scenarios"]):
             self.assertIn(f"{name} · **{scenario['amount_ckb']} CKB** · fee {scenario['fee_ckb']} CKB", rendered["Payments"])
@@ -129,34 +142,80 @@ class PayloadTests(unittest.TestCase):
         self.assertIn("Daily execution gate", fields(payload)["Checks"])
         self.assertNotIn("3/3", payload["embeds"][0]["description"])
 
-    def test_manual_payment_and_ensure_steps(self):
+    def test_manual_payment_and_retry_context(self):
         steps = complete_steps()
         steps["payment_manual"] = steps["payment_scheduled"]
         steps["payment_scheduled"] = {"outcome": "skipped"}
-        steps["topology"]["outcome"] = "skipped"
-        for key in ("ensure_a", "ensure_b", "topology_ensured"):
-            steps[key]["outcome"] = "success"
         env = complete_env(steps)
         env.update({"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_REF_NAME": "codex/report-preview"})
         rendered = fields(report.payload_from_env(env))
         self.assertIn("Manual run", rendered["Run overview"])
-        self.assertNotIn("Scheduled run", rendered["Run overview"])
         self.assertIn("Branch `codex/report-preview` · `0123456`", rendered["Run overview"])
         self.assertIn("retry `2`", rendered["Run overview"])
         self.assertIn("Preflight passed", rendered["Checks"])
-        steps["ensure_b"]["outcome"] = "failure"
-        env["FIBER_REPORT_STEPS_JSON"] = json.dumps(steps)
-        self.assertIn("❌ Node B channel", fields(report.payload_from_env(env))["Checks"])
 
-    def test_different_or_missing_node_versions_are_not_merged(self):
-        for version in ("fnn 0.9.2", None):
+    def test_each_node_version_remains_visible(self):
+        for version in ("fnn Fiber v0.9.1 (9a561b3 2026-09-10)", None):
             with self.subTest(version=version):
                 steps = complete_steps()
-                steps["update_b"]["outputs"]["fnn_version"] = version
-                overview = fields(report.payload_from_env(complete_env(steps)))["Run overview"]
-                self.assertIn("Node A FNN `fnn 0.9.1`", overview)
-                self.assertIn(f"Node B FNN `{version or 'unavailable'}`", overview)
-                self.assertNotIn("FNN (Node A/B)", overview)
+                versions = success_versions()
+                versions["nodes"][1]["fnn_version"] = version
+                steps["versions"]["outputs"]["report"] = json.dumps(versions)
+                rendered = fields(report.payload_from_env(complete_env(steps)))["Versions"]
+                self.assertIn("A FNN `fnn Fiber v0.10.1", rendered)
+                self.assertIn(f"B FNN `{version or 'unavailable'}`", rendered)
+
+    def test_version_mismatch_is_the_headline_and_preserves_all_evidence(self):
+        for problem in ("cli_mismatch", "fnn_mismatch", "rpc_mismatch"):
+            with self.subTest(problem=problem):
+                steps = complete_steps()
+                versions = success_versions()
+                versions.update(status="mismatch", errors=["Node B: " + problem])
+                versions["nodes"][1]["cli_version"] = "fnn-cli 0.10.0-rc3"
+                steps["versions"] = {"outcome": "failure", "outputs": {"report": json.dumps(versions)}}
+                steps["payment_scheduled"] = {"outcome": "skipped"}
+                env = complete_env(steps)
+                env["FIBER_REPORT_JOB_RESULT"] = "failure"
+                payload = report.payload_from_env(env)
+                embed = payload["embeds"][0]
+                self.assertIn("Fiber 版本不匹配", embed["title"])
+                self.assertIn("Node B", embed["description"])
+                self.assertEqual(embed["color"], report.FAILURE_COLOR)
+                rendered = fields(payload)
+                self.assertIn("v0.10.1", rendered["Versions"])
+                self.assertIn("fnn-cli 0.10.0-rc3", rendered["Versions"])
+                self.assertIn("A RPC `0.10.1`", rendered["Versions"])
+                self.assertIn("支付未执行", json.dumps(payload, ensure_ascii=False))
+                self.assertNotIn("3/3", embed["description"])
+
+    def test_new_stable_is_prominent_without_hiding_passing_payments(self):
+        steps = complete_steps()
+        versions = success_versions()
+        versions.update(freshness="update_available", latest={"tag": "v0.11.0", "status": "ok"})
+        steps["versions"]["outputs"]["report"] = json.dumps(versions)
+        embed = report.payload_from_env(complete_env(steps))["embeds"][0]
+        self.assertIn("发现新稳定版", embed["title"])
+        self.assertIn("v0.11.0", embed["description"])
+        self.assertIn("手工升级", embed["description"])
+        self.assertIn("3/3 payment scenarios passed", embed["description"])
+        self.assertEqual(embed["color"], report.OTHER_COLOR)
+
+    def test_latest_lookup_failure_is_unknown_without_blocking_success(self):
+        steps = complete_steps()
+        versions = success_versions()
+        versions.update(freshness="unknown", latest={"tag": "", "status": "unavailable"})
+        steps["versions"]["outputs"]["report"] = json.dumps(versions)
+        payload = report.payload_from_env(complete_env(steps))
+        self.assertIn("最新稳定版未知", payload["embeds"][0]["title"])
+        self.assertIn("3/3 payment scenarios passed", payload["embeds"][0]["description"])
+        self.assertIn("是否最新未知", fields(payload)["Versions"])
+
+    def test_broken_version_json_is_visible(self):
+        steps = complete_steps()
+        steps["versions"]["outputs"]["report"] = "{broken"
+        payload = report.payload_from_env(complete_env(steps))
+        self.assertIn("Fiber 版本检查失败", payload["embeds"][0]["title"])
+        self.assertIn("Version report JSON is invalid", fields(payload)["Versions"])
 
     def test_failure_without_json_does_not_invent_payment_count(self):
         steps = complete_steps()
@@ -201,12 +260,12 @@ class PayloadTests(unittest.TestCase):
 
     def test_preflight_failure_is_visible_when_payments_skipped(self):
         steps = complete_steps()
-        steps["update_a"]["outcome"] = "failure"
+        steps["versions"]["outcome"] = "failure"
         steps["payment_scheduled"] = {"outcome": "skipped"}
         env = complete_env(steps)
         env["FIBER_REPORT_JOB_RESULT"] = "failure"
         rendered = fields(report.payload_from_env(env))
-        self.assertIn("❌ Node A update", rendered["Checks"])
+        self.assertIn("❌ Installed Fiber versions", rendered["Checks"])
         self.assertNotIn("Preflight passed", rendered["Checks"])
         self.assertNotIn("Checkout", rendered["Checks"])
 
@@ -248,8 +307,10 @@ class PayloadTests(unittest.TestCase):
                 scenario[key] = hostile
             scenario["balances"] = [{"label": hostile, "before_ckb": hostile, "after_ckb": hostile}] * 20
         steps["payment_scheduled"]["outputs"]["report"] = json.dumps(payment)
-        steps["update_a"]["outputs"]["fnn_version"] = hostile
-        steps["update_b"]["outputs"]["fnn_version"] = hostile
+        versions = success_versions()
+        for node in versions["nodes"]:
+            node.update(fnn_version=hostile, cli_version=hostile, rpc_version=hostile, rpc_commit=hostile)
+        steps["versions"]["outputs"]["report"] = json.dumps(versions)
         env = complete_env(steps)
         for key in ("GITHUB_RUN_NUMBER", "GITHUB_REF_NAME", "GITHUB_RUN_ATTEMPT"):
             env[key] = hostile

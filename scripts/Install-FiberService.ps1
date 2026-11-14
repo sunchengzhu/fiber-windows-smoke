@@ -2,6 +2,8 @@
 [CmdletBinding()]
 param(
     [string]$SettingsPath,
+    [Parameter(Mandatory = $true)]
+    [string]$ReleaseTag,
     [SecureString]$SecretKeyPassword,
     [switch]$ForceReinstall
 )
@@ -21,10 +23,10 @@ if ($null -ne $existingServiceBeforeInstall -and -not $ForceReinstall) {
     throw "Service '$($settings.serviceName)' already exists. Use Update-FiberBinary.ps1 for normal updates, or pass -ForceReinstall with the original key password to repair the service registration."
 }
 if ($null -eq $existingServiceBeforeInstall) {
-    & (Join-Path $PSScriptRoot "Update-FiberBinary.ps1") -SettingsPath $SettingsPath -NoServiceControl
+    & (Join-Path $PSScriptRoot "Update-FiberBinary.ps1") -SettingsPath $SettingsPath -ReleaseTag $ReleaseTag -NoServiceControl
 }
 else {
-    & (Join-Path $PSScriptRoot "Update-FiberBinary.ps1") -SettingsPath $SettingsPath
+    & (Join-Path $PSScriptRoot "Update-FiberBinary.ps1") -SettingsPath $SettingsPath -ReleaseTag $ReleaseTag
 }
 
 if ([System.IO.Path]::GetFullPath($SettingsPath) -ne [System.IO.Path]::GetFullPath($paths.RuntimeConfig)) {
