@@ -53,7 +53,7 @@ function Import-FiberSettings {
     }
 
     $settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
-    foreach ($requiredName in @("installRoot", "repository", "releaseChannel", "serviceName", "rpcUrl", "peer")) {
+    foreach ($requiredName in @("installRoot", "repository", "serviceName", "rpcUrl", "peer")) {
         if ($settings.PSObject.Properties.Name -notcontains $requiredName) {
             throw "Missing required setting '$requiredName' in $SettingsPath"
         }
@@ -65,13 +65,6 @@ function Import-FiberSettings {
     }
     $settings.installRoot = $installRoot
 
-    if ([string]$settings.releaseChannel -notin @("stable", "prerelease")) {
-        throw "releaseChannel must be 'stable' or 'prerelease'"
-    }
-    if ([string]$settings.releaseChannel -eq "prerelease") {
-        Write-Warning "releaseChannel=prerelease is no longer supported; using stable releases only"
-        $settings.releaseChannel = "stable"
-    }
     if ([string]$settings.serviceName -notmatch "^[A-Za-z0-9]+$") {
         throw "serviceName must contain only ASCII letters and digits because WinSW uses it as the service id"
     }
@@ -673,34 +666,31 @@ function Get-GitHubHeaders {
 
 function Get-FiberRelease {
     param(
-        [Parameter(Mandatory = $true)]
-        [object]$Settings
+        [Parameter(Mandatory = $true)][object]$Settings,
+        [string]$ReleaseTag
     )
-
-    $repository = [string]$Settings.repository
-    $releaseTag = [string](Get-ObjectPropertyValue -Object $Settings -Name "releaseTag" -Default "")
-    $headers = Get-GitHubHeaders
-
-    if (-not [string]::IsNullOrWhiteSpace($releaseTag)) {
-        $uri = "https://api.github.com/repos/$repository/releases/tags/$releaseTag"
-        $release = Invoke-RestMethod -Uri $uri -Headers $headers -UseBasicParsing
-        if ([bool]$release.draft -or [bool]$release.prerelease) {
-            throw "Pinned Fiber release '$releaseTag' is a draft or prerelease; only stable releases are supported"
-        }
-        return $release
+    if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
+        throw "Manual upgrade requires an explicit -ReleaseTag; automatic release selection is disabled"
     }
+    if ($ReleaseTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+        throw "Only stable releases are supported; specify a tag such as v0.10.1"
+    }
+    $repository = [string]$Settings.repository
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repository/releases/tags/$ReleaseTag" `
+        -Headers (Get-GitHubHeaders) -TimeoutSec 20 -UseBasicParsing
+    if ([bool]$release.draft -or [bool]$release.prerelease -or [string]$release.tag_name -ne $ReleaseTag) {
+        throw "Requested Fiber release '$ReleaseTag' is not the requested stable release; only stable releases are supported"
+    }
+    return $release
+}
 
-    $uri = "https://api.github.com/repos/$repository/releases?per_page=30"
-    # Invoke-RestMethod returns a JSON array as one pipeline object in newer
-    # PowerShell versions. Assign first so @() expands the array elements.
-    $releaseResponse = Invoke-RestMethod -Uri $uri -Headers $headers -UseBasicParsing
-    $releases = @($releaseResponse)
-    $candidates = @($releases | Where-Object {
-        -not [bool]$_.draft -and -not [bool]$_.prerelease
-    })
-    $release = $candidates | Sort-Object { [DateTimeOffset]$_.published_at } -Descending | Select-Object -First 1
-    if ($null -eq $release) {
-        throw "No stable Fiber release found"
+function Get-LatestStableFiberRelease {
+    param([Parameter(Mandatory = $true)][string]$Repository)
+    if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "Invalid Fiber repository" }
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest" `
+        -Headers (Get-GitHubHeaders) -TimeoutSec 15 -UseBasicParsing
+    if ([bool]$release.draft -or [bool]$release.prerelease -or [string]$release.tag_name -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+        throw "Latest stable Fiber release is unavailable"
     }
     return $release
 }
@@ -776,6 +766,7 @@ Export-ModuleMember -Function @(
     "Get-ExecutableVersion",
     "Get-FiberPaths",
     "Get-FiberRelease",
+    "Get-LatestStableFiberRelease",
     "Get-ObjectPropertyValue",
     "Get-PeerChannels",
     "Get-WindowsReleaseAsset",

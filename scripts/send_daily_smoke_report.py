@@ -117,6 +117,7 @@ def collect_report(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
             "payment_scheduled" if is_daily else "payment_manual",
         )
     payment, payment_invalid = _parse_object(_output(steps, selected, "report"))
+    versions, versions_invalid = _parse_object(_output(steps, "versions", "report"))
     server = env.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
     repository = env.get("GITHUB_REPOSITORY", "")
     run_id = env.get("GITHUB_RUN_ID", "")
@@ -129,8 +130,8 @@ def collect_report(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
         "payment_outcome": _step(steps, selected).get("outcome", "unknown"),
         "started_at": _output(steps, "initialize_report", "started_at"),
         "duration_seconds": _output(steps, "timing", "duration_seconds"),
-        "fnn_a": _output(steps, "update_a", "fnn_version"),
-        "fnn_b": _output(steps, "update_b", "fnn_version"),
+        "versions": versions,
+        "versions_invalid": versions_invalid,
         "run_url": f"{server}/{repository}/actions/runs/{run_id}" if repository and run_id else "",
         "run_number": env.get("GITHUB_RUN_NUMBER", "unknown"),
         "run_attempt": env.get("GITHUB_RUN_ATTEMPT", "1"),
@@ -160,11 +161,39 @@ def _time_summary(report: Mapping[str, Any]) -> str:
 
 
 def _version_summary(report: Mapping[str, Any]) -> str:
-    a, b = report.get("fnn_a"), report.get("fnn_b")
-    if a and str(a).strip() and a == b:
-        return f"FNN (Node A/B) `{_truncate(_one_line(a), 160)}`"
-    return (f"Node A FNN `{_truncate(_one_line(a), 160)}`\n"
-            f"Node B FNN `{_truncate(_one_line(b), 160)}`")
+    versions = _mapping(report.get("versions"))
+    expected, latest = (_mapping(versions.get(key)) for key in ("expected", "latest"))
+    lines = [f"CI expected `{_truncate(_one_line(expected.get('tag')), 50)}` · `{_one_line(expected.get('commit'))[:12]}`"]
+    nodes = versions.get("nodes")
+    nodes = {node.get("name"): node for node in nodes if isinstance(node, Mapping) and isinstance(node.get("name"), str) and node.get("name") in {"A", "B"}} if isinstance(nodes, list) else {}
+    for name in ("A", "B"):
+        node = nodes.get(name, {})
+        lines.append(f"{name} FNN `{_truncate(_one_line(node.get('fnn_version')), 100)}` · CLI `{_truncate(_one_line(node.get('cli_version')), 60)}`")
+        lines.append(f"{name} RPC `{_truncate(_one_line(node.get('rpc_version')), 50)}` · `{_truncate(_one_line(node.get('rpc_commit')), 60)}`")
+    lines.append(f"Latest stable `{_truncate(_one_line(latest.get('tag')), 50)}`")
+    if latest.get("status") != "ok":
+        lines[-1] += " · 查询未成功，是否最新未知"
+    if report.get("versions_invalid"):
+        lines.append("Version report JSON is invalid.")
+    return "\n".join(lines)
+
+
+def _version_alert(report: Mapping[str, Any]) -> tuple[str, str]:
+    versions = _mapping(report.get("versions"))
+    if versions.get("status") == "mismatch":
+        errors = versions.get("errors")
+        detail = "; ".join(_one_line(value) for value in errors[:6]) if isinstance(errors, list) else ""
+        for code, label in (("cli_mismatch", "CLI 版本不匹配"), ("fnn_mismatch", "FNN 版本/commit 不匹配"), ("rpc_mismatch", "运行中 RPC 版本/commit 不匹配")):
+            detail = detail.replace(code, label)
+        return "Fiber 版本不匹配", "❌ Fiber 版本不匹配：" + _truncate(detail, 300) + "。请对齐节点、CLI 和 CI 版本基线。"
+    if versions.get("status") == "unavailable" or report.get("versions_invalid"):
+        return "Fiber 版本检查失败", "❌ Fiber 版本检查失败；实际版本与缺失项见下方 Versions。"
+    if versions.get("freshness") == "update_available":
+        latest = _mapping(versions.get("latest"))
+        return "发现新稳定版", f"⚠️ 最新稳定版 {_truncate(_one_line(latest.get('tag')), 50)}，当前验证基线 {_truncate(_one_line(_mapping(versions.get('expected')).get('tag')), 50)}；请安排手工升级。"
+    if versions and versions.get("freshness") == "unknown":
+        return "最新稳定版未知", "⚠️ 最新稳定版查询未成功；当前已安装版本检查与烟测照常进行。"
+    return "", ""
 
 
 def _preflight_summary(report: Mapping[str, Any]) -> str:
@@ -172,7 +201,7 @@ def _preflight_summary(report: Mapping[str, Any]) -> str:
     checks = [
         ("checkout", "Checkout"), ("initialize_report", "Report setup"),
         ("syntax", "PowerShell syntax"), ("unit", "PowerShell tests"),
-        ("update_a", "Node A update"), ("update_b", "Node B update"),
+        ("versions", "Installed Fiber versions"),
         ("timing", "Report timing"),
     ]
     if report.get("gate_outcome") is not None:
@@ -180,10 +209,7 @@ def _preflight_summary(report: Mapping[str, Any]) -> str:
         steps = {**steps, "daily_gate": {"outcome": report["gate_outcome"]}}
     if "reconnect" in steps:
         checks.append(("reconnect", "Payment peer connection"))
-    if any(_step(steps, key).get("outcome") not in {None, "skipped"} for key in ("ensure_a", "ensure_b")):
-        checks += [("ensure_a", "Node A channel"), ("ensure_b", "Node B channel"), ("topology_ensured", "Topology")]
-    else:
-        checks.append(("topology", "Topology"))
+    checks.append(("topology", "Topology"))
     if all(_step(steps, key).get("outcome") == "success" for key, _ in checks):
         return "✅ Preflight passed"
     result = "\n".join(f"{_outcome(_step(steps, key).get('outcome'))[0]} {label}"
@@ -203,17 +229,21 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
     """Render one bounded Discord embed without network side effects."""
     result = report.get("job_result")
     emoji, _ = _outcome(result)
+    version_label, version_alert = _version_alert(report)
+    if result == "success" and version_alert:
+        emoji = "⚠️"
     branch = _truncate(_one_line(report.get("branch")), 100)
     sha = _one_line(report.get("sha"))[:7]
     ref = f"Branch `{branch}` · `{sha}`" if report.get("branch") != "main" else ""
     attempt = _one_line(report.get("run_attempt"), "1")
     if attempt != "1":
         ref += (" · " if ref else "") + f"retry `{_truncate(attempt, 30)}`"
-    overview = [_time_summary(report), _version_summary(report)]
+    overview = [_time_summary(report)]
     if ref:
         overview.append(ref)
     fields = [
         {"name": "Run overview", "value": _truncate("\n".join(overview), FIELD_VALUE_LIMIT), "inline": False},
+        {"name": "Versions", "value": _truncate(_version_summary(report), FIELD_VALUE_LIMIT), "inline": False},
         {"name": "Checks", "value": _truncate(_preflight_summary(report), FIELD_VALUE_LIMIT), "inline": False},
     ]
     payment = _mapping(report.get("payment"))
@@ -230,7 +260,7 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
         description = f"{len(scenarios)}/3 payment scenarios have verified success summaries."
         if len(scenarios) == 3:
             description = "3/3 payment scenarios passed."
-            fields[1]["value"] += " · Balances & fees verified"
+            fields[2]["value"] += " · Balances & fees verified"
         payment_lines = []
         for key, name in SCENARIOS:
             scenario = scenarios.get(key)
@@ -244,6 +274,8 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
         elif outcome == "skipped":
             description = "Payment flow was skipped."
             message = "Payments were not requested, or an earlier step prevented the payment flow from starting."
+            if _mapping(report.get("versions")).get("status") in {"mismatch", "unavailable"}:
+                message = "支付未执行：已被 Fiber 版本预检阻止。请核对 Versions 中实际版本和 CI expected，完成手工升级或修正基线。"
         else:
             description = "Individual payment results unavailable."
             message = "No structured payment summary was produced; open the run log for details."
@@ -252,13 +284,15 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
         fields.append({"name": f"{_outcome(outcome)[0]} Payment flow", "value": message, "inline": False})
     if result != "success":
         description += f" Workflow {_outcome(result)[1].lower()}."
+    if version_alert:
+        description = version_alert + "\n" + description
     description += f" · ⏱ {_duration(report.get('duration_seconds'))}"
     for field in fields:
         field["value"] = _truncate(field["value"], FIELD_VALUE_LIMIT)
     embed: dict[str, Any] = {
-        "title": _truncate(f"{emoji} Fiber Windows Daily Smoke · Testnet · #{_one_line(report.get('run_number'))}", 256),
+        "title": _truncate(f"{emoji} Fiber Windows Daily Smoke · {version_label or 'Testnet'} · #{_one_line(report.get('run_number'))}", 256),
         "description": _truncate(description, 4096),
-        "color": SUCCESS_COLOR if result == "success" else FAILURE_COLOR if result == "failure" else OTHER_COLOR,
+        "color": FAILURE_COLOR if result == "failure" else OTHER_COLOR if version_alert or result != "success" else SUCCESS_COLOR,
         "fields": fields,
         "footer": {"text": "Click the title for the full report and logs"},
     }

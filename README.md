@@ -1,6 +1,6 @@
 # Fiber Windows Smoke
 
-在一台长期在线的 Windows x64 机器上运行两个 Fiber testnet 节点，并通过 self-hosted GitHub Actions runner 每天执行升级、健康检查和真实支付冒烟测试。
+在一台长期在线的 Windows x64 机器上运行两个 Fiber testnet 节点，并通过 self-hosted GitHub Actions runner 每天核对已安装版本、检查节点健康并执行真实支付冒烟测试。
 
 ## 支付拓扑
 
@@ -19,7 +19,7 @@ Workflow：[`.github/workflows/fiber-node-maintenance.yml`](.github/workflows/fi
 每天北京时间 **10:30** 由 Windows 任务计划程序主动触发，GitHub **10:47** 的 cron 作为兜底。安装方式见[定时调度说明](docs/daily-scheduler.md)。执行内容：
 
 1. 检查所有 PowerShell 脚本语法并运行模块单元测试。
-2. 检查 Node A、Node B 是否有更新的 Fiber 稳定版；有更新时校验 SHA-256、执行数据库兼容性预检并安全替换二进制。
+2. 核对两个节点已安装的 FNN、CLI 和运行中 RPC 的版本与 commit，并查询最新稳定版作为人工升级提示。
 3. 检查两个 Windows 服务、RPC、peer 连接和两条 `ChannelReady` channel。
 4. Node A 创建 `0.02 CKB` invoice，由 Node B 支付。
 5. Node A 向测试网公共节点 `CkbaNode-1` keysend `0.01 CKB`。
@@ -27,11 +27,29 @@ Workflow：[`.github/workflows/fiber-node-maintenance.yml`](.github/workflows/fi
 7. 将支付前后余额、手续费、Payment Hash 和资金流写入日志及 GitHub Job Summary。
 8. 执行结束后向 Discord 发送汇总卡片，包括运行状态、节点版本、前置检查和三笔支付明细；失败时也发送。
 
-自动升级不会创建新 channel。需要数据库 migration 的版本会拒绝自动升级，不会直接修改现有数据。
+每日 CI 不下载或替换二进制、不停启服务、不迁移数据库、不开新通道。版本基线集中在 [`config/tested-fiber-release.json`](config/tested-fiber-release.json)，目前是 **v0.10.1 / d9b6bbd**。Windows 上已有的 `releaseChannel`、`releaseTag` 字段不再控制升级，可在下次维护时移除。
 
-更新仅选择 GitHub 标记为正式发布的稳定版，排除 RC、其他 prerelease 和 draft。示例配置使用 `releaseChannel: "stable"`；Windows 上现有的 `releaseChannel: "prerelease"` 配置会在读取时按 `stable` 处理，无需先手动修改机器配置。
+版本报告区分两种情况：
 
-`releaseTag` 留空时自动跟踪最新稳定版；填写稳定版 tag 时固定使用该版本。指定 prerelease 或 draft tag 会在下载二进制、停止服务之前报错。
+- **Fiber 版本不匹配**：任一节点的 FNN tag/commit、CLI 版本或运行中 RPC tag/commit 与基线不同，CI 在支付前失败。GitHub Summary 和 Discord 标题直接标注版本不匹配，并保留 A/B 的全部可读实际版本、CI 预期和最新稳定版；一台检查失败不会遮住另一台信息。
+- **发现新稳定版**：GitHub 的最新正式版高于基线，报告醒目提示手工升级，当前基线的烟测仍继续执行。新版本提示本身不证明支付失败是版本造成的。
+
+最新版本查询只读取 GitHub release 元数据，过滤 prerelease/draft；API 不可用时显示“最新稳定版未知”，不阻止已安装版本检查和烟测，也不声称当前已是最新。
+
+### 人工升级
+
+以后通过 Codex 发起升级：先确认明确的稳定版 tag、发布说明和迁移要求，停机备份两个节点的数据、密钥、配置和旧二进制，在副本上验证迁移，再更新正式节点并跑完整烟测。
+
+普通二进制更新必须显式指定目标，例如在 Windows 管理员 PowerShell 中：
+
+```powershell
+scripts\Update-FiberBinary.ps1 -SettingsPath C:\fiber-node\automation\settings.json -ReleaseTag v0.10.1
+scripts\Update-FiberBinary.ps1 -SettingsPath C:\fiber-node-b\automation\settings.json -ReleaseTag v0.10.1
+```
+
+该脚本仍会拒绝需要数据库迁移的更新；迁移由当次人工维护单独处理，禁止略过兼容性校验。初次安装 `Install-FiberService.ps1` 和 `Install-SecondNode.ps1` 也必须传入 `-ReleaseTag`。
+
+升级时同时更新 `config/tested-fiber-release.json` 的 tag 和对应官方 commit；两台 FNN、各自 CLI、运行中 RPC 和 CI 基线都对齐后，再运行每日流程验证。仅改基线不会升级服务器；仅换服务器二进制也不能绕过 CI 的版本检查。
 
 两个调度入口共用 Windows 上的每日执行记录，同一天只自动执行一次烟测及通知。失败后不会自动重复支付；同一天可以显式重新运行原 run，跨日恢复则使用普通手动运行。服务器离线、网络或 runner 排队仍可能推迟实际开跑时间。
 
@@ -57,16 +75,15 @@ B -> A -> CkbaNode-1  B -(0.03 CKB + fee)   A +fee   CkbaNode-1 +0.03 CKB
 
 ## 手动运行
 
-在 GitHub Actions 页面选择 `Fiber Windows node maintenance`，点击 **Run workflow**。通常手动验证使用：
+在 GitHub Actions 页面选择 `Fiber Windows daily smoke`，点击 **Run workflow**。通常手动验证使用：
 
 ```text
 scheduled_date: 留空
-ensure_channel: false
 send_payment:   true
 send_discord_report: true
 ```
 
-`ensure_channel` 可能锁定链上 CKB，日常不要勾选；`send_payment` 会执行三笔真实支付：`0.02 + 0.01 + 0.03 CKB`，另加一笔动态计算的路由手续费。
+`send_payment` 会执行三笔真实支付：`0.02 + 0.01 + 0.03 CKB`，另加一笔动态计算的路由手续费。
 
 `send_discord_report` 只控制手动运行是否发报告，默认关闭；定时运行始终尝试发送。该开关本身不会触发支付。
 
@@ -80,7 +97,7 @@ send_discord_report: true
 2. 打开 [本仓库的 Actions Secrets 设置](https://github.com/sunchengzhu/fiber-windows-smoke/settings/secrets/actions)，选择 **New repository secret**：
    - Name：`DISCORD_WEBHOOK_URL`
    - Secret：上一步复制的完整 URL。
-3. 包含本功能的代码进入 `main` 后，每日定时运行会自动发送。可手动勾选 `send_discord_report` 验证发送；`send_payment=false` 时只执行原有升级和健康检查，卡片明确显示未请求支付。如需完整支付明细，同时勾选 `send_payment`。
+3. 包含本功能的代码进入 `main` 后，每日定时运行会自动发送。可手动勾选 `send_discord_report` 验证发送；`send_payment=false` 时只执行版本和健康检查，卡片明确显示未请求支付。如需完整支付明细，同时勾选 `send_payment`。
 
 也可以在自己的终端交互式保存 Secret，避免把 URL 写入命令历史：
 
@@ -93,7 +110,7 @@ Webhook URL 已绑定频道，频道 ID 本身不是发送凭据；不需要 Bot
 ### 报告内容与失败处理
 
 - 原支付脚本把已经通过断言的金额、余额、手续费和 Payment Hash 同时写到 GitHub Job Summary 和结构化步骤输出。Discord 直接复用这些结果，不会再执行支付或查询节点。
-- 独立 Ubuntu 通知 job 在 Windows job 结束后发送简报：总体结果与耗时、北京时间的实际开始时间、FNN 版本、检查结论，以及三条资金流。A/B 版本相同则合并展示；分支/commit 仅在非 `main` 运行时展示，重跑会标注次数。
+- 独立 Ubuntu 通知 job 在 Windows job 结束后发送简报：总体结果与耗时、北京时间的实际开始时间、独立的版本对照区、检查结论，以及三条资金流。版本区始终展示 A/B 的 FNN、CLI、RPC、CI 基线和最新稳定版；分支/commit 仅在非 `main` 运行时展示，重跑会标注次数。
 - 三笔支付合并到一个区块，每笔只显示类型、路径、金额和 CKB 手续费；前后余额、逐项断言、shannons/费率、Payment Hash 保留在执行日志和 GitHub Job Summary，点击卡片标题查看。只有三笔结果齐全时才显示余额与手续费验证通过。
 - 主调度计划时间为北京时间 **10:30**，GitHub **10:47** cron 兜底可能延迟。卡片标注定时或手动触发及实际开始时间，不将计划时刻当成实际执行时间。重复或过期任务跳过烟测及 Discord。
 - 前置检查正常时只显示一句通过；异常时展示未通过、取消、跳过或状态未知的检查，正常步骤省略。
@@ -106,7 +123,7 @@ Webhook URL 已绑定频道，频道 ID 本身不是发送凭据；不需要 Bot
 以下检查均不访问 Fiber 节点、不发送 Discord 消息：
 
 ```sh
-python3 -m unittest discover -s tests -p 'test_daily_smoke_report.py'
+python3 -m unittest discover -s tests
 python3 scripts/send_daily_smoke_report.py --dry-run
 ```
 
@@ -115,6 +132,7 @@ PowerShell 检查：
 ```powershell
 tests\Test-PowerShellSyntax.ps1
 tests\Test-Module.ps1
+tests\Test-InstalledFiber.ps1
 tests\Test-PaymentFlowReport.ps1
 tests\Test-DailySchedule.ps1
 tests\Test-DailyDispatch.ps1

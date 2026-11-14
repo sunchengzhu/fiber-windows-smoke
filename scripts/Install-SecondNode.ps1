@@ -3,6 +3,8 @@
 param(
     [string]$PrimarySettingsPath,
     [string]$SecondarySettingsPath,
+    [Parameter(Mandatory = $true)]
+    [string]$ReleaseTag,
     [decimal]$FundingAmountCkb = 5000,
     [string]$PrimaryP2pAddress = "/ip4/127.0.0.1/tcp/8228",
     [string]$SecondaryRpcAddress = "127.0.0.1:8327",
@@ -36,8 +38,6 @@ $secondaryRpcUrl = "http://$SecondaryRpcAddress"
 $secondarySettings = [ordered]@{
     installRoot         = "C:\fiber-node-b"
     repository          = [string]$primarySettings.repository
-    releaseChannel      = [string]$primarySettings.releaseChannel
-    releaseTag          = [string](Get-ObjectPropertyValue -Object $primarySettings -Name "releaseTag" -Default "")
     serviceName         = "FiberNodeB"
     rpcUrl              = $secondaryRpcUrl
     rpcListeningAddress = $SecondaryRpcAddress
@@ -75,7 +75,7 @@ $secondarySettings | ConvertTo-Json -Depth 20 | Set-Content `
 Write-Host "Installing node B with an independent key, data directory, service, and ports"
 Write-Host "Node A pubkey: $($primaryInfo.pubkey)"
 Write-Host "Node B settings: $SecondarySettingsPath"
-& (Join-Path $PSScriptRoot "Install-FiberService.ps1") -SettingsPath $SecondarySettingsPath
+& (Join-Path $PSScriptRoot "Install-FiberService.ps1") -SettingsPath $SecondarySettingsPath -ReleaseTag $ReleaseTag
 
 Write-Host "Node B is installed. Fund the CKB address printed above with about 5500 testnet CKB."
 Write-Host "After the funding transaction is confirmed, run:"
