@@ -52,7 +52,10 @@ function Get-LatestStableFiberRelease {
 }
 '@ | Set-Content -LiteralPath (Join-Path $tempRoot 'FiberVersionFixture.psm1') -Encoding UTF8
     $manifest = Join-Path $tempRoot 'release.json'
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'config/tested-fiber-release.json') -Destination $manifest
+    # Fixture versions are independent of the deployed baseline. Future manual
+    # upgrades only need to change the real manifest, not these historical cases.
+    @{ repository = 'nervosnetwork/fiber'; tag = 'v0.10.1'; commit = 'd9b6bbd74faf5b168244e3ddea5b6762a04e0a71' } |
+        ConvertTo-Json | Set-Content -LiteralPath $manifest -Encoding UTF8
     $cases = @{
         'matching' = @('match', 'current')
         'cli-mismatch' = @('mismatch', 'current')
