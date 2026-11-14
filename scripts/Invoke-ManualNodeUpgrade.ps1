@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
-    [ValidateSet("Inspect", "Upgrade")]
+    [ValidateSet("Inspect", "Rehearse", "Upgrade")]
     [string]$Operation = "Inspect",
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+$')]
@@ -102,13 +102,19 @@ function Copy-VerifiedTree {
 function Invoke-OfflineFnn {
     param([string]$DataDirectory, [string]$ConfigFile, [string]$LogPrefix, [switch]$Validate)
     $start = New-Object System.Diagnostics.ProcessStartInfo
-    $start.FileName = $newFnn
-    $start.Arguments = '--config "' + $ConfigFile + '" --dir "' + $DataDirectory + '"'
-    if ($Validate) { $start.Arguments += ' --check-validate' }
+    # .NET Framework's redirected stdin writer emits a BOM when the process
+    # starts, even before a raw BaseStream write. Let cmd redirect an ASCII
+    # file directly so Rust receives exactly y + CRLF, with no managed writer.
+    $inputFile = "$LogPrefix.input.txt"
+    [System.IO.File]::WriteAllBytes($inputFile, [System.Text.Encoding]::ASCII.GetBytes("y`r`n"))
+    $fnnArguments = '--config "' + $ConfigFile + '" --dir "' + $DataDirectory + '"'
+    if ($Validate) { $fnnArguments += ' --check-validate' }
+    $start.FileName = $env:ComSpec
+    $start.Arguments = '/d /s /c ""' + $newFnn + '" ' + $fnnArguments + ' < "' + $inputFile + '""'
     $start.WorkingDirectory = $stage
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
-    $start.RedirectStandardInput = $true
+    $start.RedirectStandardInput = $false
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     # This process has no network-enabled service or credential. The minimal
@@ -126,15 +132,8 @@ function Invoke-OfflineFnn {
         $null = $process.Start()
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
-        # Windows PowerShell/.NET can prefix StreamWriter input with a BOM;
-        # Rust's confirmation reader then sees BOM+y and treats it as cancel.
-        # Send the already-authorized confirmation as raw ASCII bytes.
-        $confirmation = [System.Text.Encoding]::ASCII.GetBytes("y`n")
-        $process.StandardInput.BaseStream.Write($confirmation, 0, $confirmation.Length)
-        $process.StandardInput.BaseStream.Flush()
-        $process.StandardInput.Close()
         if (-not $process.WaitForExit(300000)) {
-            $process.Kill()
+            & taskkill.exe /PID $process.Id /T /F | Out-Null
             $process.WaitForExit()
             throw "Offline FNN exceeded five minutes; inspect $LogPrefix before continuing."
         }
@@ -158,9 +157,36 @@ function Invoke-OfflineFnn {
         }
     }
     finally {
-        if ($process.Id -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+        if ($process.Id -and -not $process.HasExited) {
+            & taskkill.exe /PID $process.Id /T /F | Out-Null
+            $process.WaitForExit()
+        }
         $process.Dispose()
     }
+}
+
+if ($Operation -eq 'Rehearse') {
+    $savedBackups = @(Get-ChildItem -LiteralPath 'C:\fiber-maintenance\backups' -Directory |
+        Where-Object { $_.Name -like "*-$ReleaseTag-*" -and (Test-Path -LiteralPath (Join-Path $_.FullName 'BACKUP_COMPLETE')) } |
+        Sort-Object Name -Descending)
+    if ($savedBackups.Count -eq 0) { throw 'A complete backup is required for isolated rehearsal' }
+    $savedBackup = $savedBackups[0].FullName
+    $probe = Join-Path $savedBackup ("rehearsal-" + [Guid]::NewGuid().ToString('N'))
+    try {
+        foreach ($node in $nodes) {
+            $copyData = Join-Path $probe "node-$($node.Name)"
+            $null = Copy-VerifiedTree -Source (Join-Path $savedBackup "node-$($node.Name)\data\fiber\store") -Destination (Join-Path $copyData 'fiber\store')
+            $prefix = Join-Path $savedBackup "node-$($node.Name)-probe-$($env:GITHUB_RUN_ID)"
+            Invoke-OfflineFnn -DataDirectory $copyData -ConfigFile (Join-Path $savedBackup 'offline-migration.yml') -LogPrefix "$prefix-migrate"
+            Invoke-OfflineFnn -DataDirectory $copyData -ConfigFile (Join-Path $savedBackup 'offline-migration.yml') -LogPrefix "$prefix-validate" -Validate
+            Write-Host "Node $($node.Name): isolated backup migration and full validation passed"
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Recurse -Force }
+    }
+    $global:LASTEXITCODE = 0
+    return
 }
 
 $targetVersion = $ReleaseTag.Substring(1)
