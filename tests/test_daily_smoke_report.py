@@ -104,7 +104,7 @@ class PayloadTests(unittest.TestCase):
         rendered = fields(payload)
         self.assertNotIn("Branch", rendered["Run overview"])
         self.assertEqual(rendered["Checks"], "✅ Preflight passed · Balances & fees verified")
-        self.assertEqual(rendered["Versions"], "A/B `v0.10.1` · 版本一致 · 已是最新稳定版")
+        self.assertEqual(rendered["Versions"], "A/B `v0.10.1` · verified · latest stable")
         self.assertNotIn("d9b6bbd", rendered["Versions"])
         self.assertNotIn("2026-11-14", rendered["Versions"])
         self.assertEqual(len(embed["fields"]), 4)
@@ -179,14 +179,14 @@ class PayloadTests(unittest.TestCase):
                 env["FIBER_REPORT_JOB_RESULT"] = "failure"
                 payload = report.payload_from_env(env)
                 embed = payload["embeds"][0]
-                self.assertIn("Fiber 版本不匹配", embed["title"])
+                self.assertIn("Fiber version mismatch", embed["title"])
                 self.assertIn("Node B", embed["description"])
                 self.assertEqual(embed["color"], report.FAILURE_COLOR)
                 rendered = fields(payload)
                 self.assertIn("v0.10.1", rendered["Versions"])
                 self.assertIn("fnn-cli 0.10.0-rc3", rendered["Versions"])
                 self.assertIn("A RPC `0.10.1`", rendered["Versions"])
-                self.assertIn("支付未执行", json.dumps(payload, ensure_ascii=False))
+                self.assertIn("Payments were not started", json.dumps(payload, ensure_ascii=False))
                 self.assertNotIn("3/3", embed["description"])
 
     def test_new_stable_is_prominent_without_hiding_passing_payments(self):
@@ -196,12 +196,12 @@ class PayloadTests(unittest.TestCase):
         steps["versions"]["outputs"]["report"] = json.dumps(versions)
         payload = report.payload_from_env(complete_env(steps))
         embed = payload["embeds"][0]
-        self.assertIn("发现新稳定版", embed["title"])
+        self.assertIn("New stable release", embed["title"])
         self.assertIn("v0.11.0", embed["description"])
-        self.assertIn("手工升级", embed["description"])
+        self.assertIn("Upgrade manually", embed["description"])
         self.assertIn("3/3 payment scenarios passed", embed["description"])
         self.assertEqual(embed["color"], report.OTHER_COLOR)
-        self.assertEqual(fields(payload)["Versions"], "A/B `v0.10.1` · 最新 `v0.11.0`（待手工升级）")
+        self.assertEqual(fields(payload)["Versions"], "A/B `v0.10.1` · latest `v0.11.0` (manual upgrade)")
 
     def test_latest_lookup_failure_is_unknown_without_blocking_success(self):
         steps = complete_steps()
@@ -209,16 +209,35 @@ class PayloadTests(unittest.TestCase):
         versions.update(freshness="unknown", latest={"tag": "", "status": "unavailable"})
         steps["versions"]["outputs"]["report"] = json.dumps(versions)
         payload = report.payload_from_env(complete_env(steps))
-        self.assertIn("最新稳定版未知", payload["embeds"][0]["title"])
+        self.assertIn("Latest stable unknown", payload["embeds"][0]["title"])
         self.assertIn("3/3 payment scenarios passed", payload["embeds"][0]["description"])
-        self.assertEqual(fields(payload)["Versions"], "A/B `v0.10.1` · 版本一致 · 最新稳定版未知")
+        self.assertEqual(fields(payload)["Versions"], "A/B `v0.10.1` · verified · latest stable unknown")
 
     def test_broken_version_json_is_visible(self):
         steps = complete_steps()
         steps["versions"]["outputs"]["report"] = "{broken"
         payload = report.payload_from_env(complete_env(steps))
-        self.assertIn("Fiber 版本检查失败", payload["embeds"][0]["title"])
+        self.assertIn("Fiber version check failed", payload["embeds"][0]["title"])
         self.assertIn("Version report JSON is invalid", fields(payload)["Versions"])
+
+    def test_notification_copy_is_english_in_every_version_state(self):
+        for state in ("current", "update_available", "unknown", "mismatch", "unavailable"):
+            with self.subTest(state=state):
+                steps = complete_steps()
+                versions = success_versions()
+                versions["freshness"] = state
+                if state == "update_available":
+                    versions["latest"] = {"tag": "v0.11.0", "status": "ok"}
+                elif state == "unknown":
+                    versions["latest"] = {"tag": "", "status": "unavailable"}
+                elif state in {"mismatch", "unavailable"}:
+                    versions.update(status=state, errors=["Node B: cli_mismatch"])
+                    steps["payment_scheduled"] = {"outcome": "skipped"}
+                steps["versions"]["outputs"]["report"] = json.dumps(versions)
+                env = complete_env(steps)
+                if state in {"mismatch", "unavailable"}:
+                    env["FIBER_REPORT_JOB_RESULT"] = "failure"
+                self.assertNotRegex(json.dumps(report.payload_from_env(env), ensure_ascii=False), r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
     def test_failure_without_json_does_not_invent_payment_count(self):
         steps = complete_steps()

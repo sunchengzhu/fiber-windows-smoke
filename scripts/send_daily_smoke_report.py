@@ -178,11 +178,11 @@ def _version_summary(report: Mapping[str, Any]) -> str:
     if same_verified_versions:
         installed = f"A/B `{_truncate(tag, 50)}`"
         if latest.get("status") != "ok" or versions.get("freshness") == "unknown":
-            return f"{installed} · 版本一致 · 最新稳定版未知"
+            return f"{installed} · verified · latest stable unknown"
         if versions.get("freshness") == "current" and latest.get("tag") == tag:
-            return f"{installed} · 版本一致 · 已是最新稳定版"
+            return f"{installed} · verified · latest stable"
         if versions.get("freshness") == "update_available":
-            return f"{installed} · 最新 `{_truncate(_one_line(latest.get('tag')), 50)}`（待手工升级）"
+            return f"{installed} · latest `{_truncate(_one_line(latest.get('tag')), 50)}` (manual upgrade)"
     # Expand the comparison when evidence is missing or a component differs.
     # Complete binary/RPC versions and commits also remain in GitHub Summary.
     lines = [f"CI expected `{_truncate(_one_line(expected.get('tag')), 50)}` · `{_one_line(expected.get('commit'))[:12]}`"]
@@ -192,7 +192,7 @@ def _version_summary(report: Mapping[str, Any]) -> str:
         lines.append(f"{name} RPC `{_truncate(_one_line(node.get('rpc_version')), 50)}` · `{_truncate(_one_line(node.get('rpc_commit')), 60)}`")
     lines.append(f"Latest stable `{_truncate(_one_line(latest.get('tag')), 50)}`")
     if latest.get("status") != "ok":
-        lines[-1] += " · 查询未成功，是否最新未知"
+        lines[-1] += " · lookup failed; freshness unknown"
     if report.get("versions_invalid"):
         lines.append("Version report JSON is invalid.")
     return "\n".join(lines)
@@ -203,16 +203,16 @@ def _version_alert(report: Mapping[str, Any]) -> tuple[str, str]:
     if versions.get("status") == "mismatch":
         errors = versions.get("errors")
         detail = "; ".join(_one_line(value) for value in errors[:6]) if isinstance(errors, list) else ""
-        for code, label in (("cli_mismatch", "CLI 版本不匹配"), ("fnn_mismatch", "FNN 版本/commit 不匹配"), ("rpc_mismatch", "运行中 RPC 版本/commit 不匹配")):
+        for code, label in (("cli_mismatch", "CLI version mismatch"), ("fnn_mismatch", "FNN version/commit mismatch"), ("rpc_mismatch", "running RPC version/commit mismatch")):
             detail = detail.replace(code, label)
-        return "Fiber 版本不匹配", "❌ Fiber 版本不匹配：" + _truncate(detail, 300) + "。请对齐节点、CLI 和 CI 版本基线。"
+        return "Fiber version mismatch", "❌ Fiber version mismatch: " + _truncate(detail, 300) + ". Align the nodes, CLI, and CI baseline."
     if versions.get("status") == "unavailable" or report.get("versions_invalid"):
-        return "Fiber 版本检查失败", "❌ Fiber 版本检查失败；实际版本与缺失项见下方 Versions。"
+        return "Fiber version check failed", "❌ Fiber version check failed. See Versions for installed versions and missing data."
     if versions.get("freshness") == "update_available":
         latest = _mapping(versions.get("latest"))
-        return "发现新稳定版", f"⚠️ 最新稳定版 {_truncate(_one_line(latest.get('tag')), 50)}，当前验证基线 {_truncate(_one_line(_mapping(versions.get('expected')).get('tag')), 50)}；请安排手工升级。"
+        return "New stable release", f"⚠️ Stable {_truncate(_one_line(latest.get('tag')), 50)} is available; tested baseline {_truncate(_one_line(_mapping(versions.get('expected')).get('tag')), 50)}. Upgrade manually."
     if versions and versions.get("freshness") == "unknown":
-        return "最新稳定版未知", "⚠️ 最新稳定版查询未成功；当前已安装版本检查与烟测照常进行。"
+        return "Latest stable unknown", "⚠️ Latest stable lookup failed; testing the installed version."
     return "", ""
 
 
@@ -295,7 +295,7 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
             description = "Payment flow was skipped."
             message = "Payments were not requested, or an earlier step prevented the payment flow from starting."
             if _mapping(report.get("versions")).get("status") in {"mismatch", "unavailable"}:
-                message = "支付未执行：已被 Fiber 版本预检阻止。请核对 Versions 中实际版本和 CI expected，完成手工升级或修正基线。"
+                message = "Payments were not started: Fiber version checks failed. Compare installed versions with CI expected, then align the deployment and baseline."
         else:
             description = "Individual payment results unavailable."
             message = "No structured payment summary was produced; open the run log for details."
