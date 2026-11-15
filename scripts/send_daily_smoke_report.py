@@ -258,13 +258,10 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
     attempt = _one_line(report.get("run_attempt"), "1")
     if attempt != "1":
         ref += (" · " if ref else "") + f"retry `{_truncate(attempt, 30)}`"
-    overview = [_time_summary(report)]
-    if ref:
-        overview.append(ref)
+    checks = {"name": "Checks", "value": _truncate(_preflight_summary(report), FIELD_VALUE_LIMIT), "inline": False}
     fields = [
-        {"name": "Run overview", "value": _truncate("\n".join(overview), FIELD_VALUE_LIMIT), "inline": False},
         {"name": "Versions", "value": _truncate(_version_summary(report), FIELD_VALUE_LIMIT), "inline": False},
-        {"name": "Checks", "value": _truncate(_preflight_summary(report), FIELD_VALUE_LIMIT), "inline": False},
+        checks,
     ]
     payment = _mapping(report.get("payment"))
     if payment.get("status") == "disabled":
@@ -280,7 +277,7 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
         description = f"{len(scenarios)}/3 payment scenarios have verified success summaries."
         if len(scenarios) == 3:
             description = "3/3 payment scenarios passed."
-            fields[2]["value"] += " · Balances & fees verified"
+            checks["value"] += " · Balances & fees verified"
         payment_lines = []
         for key, name in SCENARIOS:
             scenario = scenarios.get(key)
@@ -306,7 +303,9 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
         description += f" Workflow {_outcome(result)[1].lower()}."
     if version_alert:
         description = version_alert + "\n" + description
-    description += f" · ⏱ {_duration(report.get('duration_seconds'))}"
+    description += f" · ⏱ {_duration(report.get('duration_seconds'))} · {_time_summary(report)}"
+    if ref:
+        description += "\n" + ref
     for field in fields:
         field["value"] = _truncate(field["value"], FIELD_VALUE_LIMIT)
     embed: dict[str, Any] = {
