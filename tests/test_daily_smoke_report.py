@@ -99,15 +99,17 @@ class PayloadTests(unittest.TestCase):
         payload = report.payload_from_env(complete_env())
         embed = payload["embeds"][0]
         self.assertEqual(embed["color"], report.SUCCESS_COLOR)
-        self.assertEqual(embed["description"], "3/3 payment scenarios passed. · ⏱ 2m 5s")
+        self.assertEqual(embed["description"], "3/3 payment scenarios passed. · ⏱ 2m 5s · Scheduled run · Started 2026-09-15 08:02:03 CST")
+        self.assertNotIn("\n", embed["description"])
         self.assertEqual(embed["url"], "https://github.com/sunchengzhu/fiber-windows-smoke/actions/runs/100")
         rendered = fields(payload)
-        self.assertNotIn("Branch", rendered["Run overview"])
+        self.assertNotIn("Run overview", rendered)
+        self.assertNotIn("Branch", embed["description"])
         self.assertEqual(rendered["Checks"], "✅ Preflight passed · Balances & fees verified")
         self.assertEqual(rendered["Versions"], "A/B `v0.10.1` · verified · latest stable")
         self.assertNotIn("d9b6bbd", rendered["Versions"])
         self.assertNotIn("2026-11-14", rendered["Versions"])
-        self.assertEqual(len(embed["fields"]), 4)
+        self.assertEqual(len(embed["fields"]), 3)
         self.assertEqual(len(rendered["Payments"].splitlines()), 3)
         for (_, name), scenario in zip(report.SCENARIOS, success_payment()["scenarios"]):
             self.assertIn(f"{name} · **{scenario['amount_ckb']} CKB** · fee {scenario['fee_ckb']} CKB", rendered["Payments"])
@@ -121,7 +123,7 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["allowed_mentions"], {"parse": []})
 
     def test_actual_start_does_not_invent_delay_or_scheduled_date(self):
-        overview = fields(report.payload_from_env(complete_env()))["Run overview"]
+        overview = report.payload_from_env(complete_env())["embeds"][0]["description"]
         self.assertIn("Scheduled run · Started 2026-09-15 08:02:03 CST", overview)
         self.assertNotIn("10:30", overview)
         self.assertNotIn("Delay", overview)
@@ -130,9 +132,10 @@ class PayloadTests(unittest.TestCase):
     def test_windows_dispatch_is_reported_as_a_daily_run(self):
         env = complete_env()
         env.update({"GITHUB_EVENT_NAME": "workflow_dispatch", "FIBER_REPORT_IS_DAILY": "true", "FIBER_REPORT_GATE_OUTCOME": "success"})
-        rendered = fields(report.payload_from_env(env))
-        self.assertIn("Scheduled run", rendered["Run overview"])
-        self.assertNotIn("Manual run", rendered["Run overview"])
+        payload = report.payload_from_env(env)
+        rendered = fields(payload)
+        self.assertIn("Scheduled run", payload["embeds"][0]["description"])
+        self.assertNotIn("Manual run", payload["embeds"][0]["description"])
         self.assertIn("Preflight passed", rendered["Checks"])
 
     def test_daily_gate_failure_is_visible_without_payment_results(self):
@@ -149,10 +152,12 @@ class PayloadTests(unittest.TestCase):
         steps["payment_scheduled"] = {"outcome": "skipped"}
         env = complete_env(steps)
         env.update({"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_REF_NAME": "codex/report-preview"})
-        rendered = fields(report.payload_from_env(env))
-        self.assertIn("Manual run", rendered["Run overview"])
-        self.assertIn("Branch `codex/report-preview` · `0123456`", rendered["Run overview"])
-        self.assertIn("retry `2`", rendered["Run overview"])
+        payload = report.payload_from_env(env)
+        rendered = fields(payload)
+        description = payload["embeds"][0]["description"]
+        self.assertIn("Manual run", description)
+        self.assertIn("Branch `codex/report-preview` · `0123456`", description)
+        self.assertIn("retry `2`", description)
         self.assertIn("Preflight passed", rendered["Checks"])
 
     def test_each_node_version_remains_visible(self):
@@ -305,7 +310,7 @@ class PayloadTests(unittest.TestCase):
                 steps["initialize_report"]["outputs"]["started_at"] = started
                 steps["timing"]["outputs"]["duration_seconds"] = "NaN"
                 payload = report.payload_from_env(complete_env(steps))
-                self.assertIn("Started unavailable", fields(payload)["Run overview"])
+                self.assertIn("Started unavailable", payload["embeds"][0]["description"])
                 self.assertIn("duration unavailable", payload["embeds"][0]["description"])
 
     def test_missing_scenario_never_claims_three_passes(self):
