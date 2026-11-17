@@ -325,6 +325,87 @@ class PayloadTests(unittest.TestCase):
         self.assertNotIn("Balances & fees verified", text)
         self.assertIn("Summary unavailable", text)
 
+    def failure_payload(self, payment):
+        steps = complete_steps()
+        steps["payment_scheduled"] = {"outcome": "failure", "outputs": {"report": json.dumps(payment)}}
+        env = complete_env(steps)
+        env["FIBER_REPORT_JOB_RESULT"] = "failure"
+        return report.payload_from_env(env)
+
+    def test_liquidity_failure_identifies_cause_and_no_payments_sent(self):
+        payment = {
+            "schema_version": 2, "status": "failure", "liquidity_status": "failed",
+            "failure": {"stage": "preflight", "source": "liquidity", "reason":
+                        "Node A -> CkbaNode-1 insufficient outbound CKB liquidity: need 0.04 CKB; available 0 CKB; Closed=1."},
+            "scenarios": [{"key": key, "status": "not_started", "amount_ckb": amount}
+                          for key, amount in [("invoice", "0.02"), ("keysend", "0.01"), ("routed", "0.03")]],
+        }
+        payload = self.failure_payload(payment)
+        rendered = fields(payload)
+        self.assertIn("0/3 payment scenarios verified", payload["embeds"][0]["description"])
+        self.assertIn("Liquidity preflight · Liquidity", rendered["Failure"])
+        self.assertIn("available 0 CKB; Closed=1", rendered["Failure"])
+        self.assertIn("Node checks passed · ❌ Payment liquidity preflight", rendered["Checks"])
+        self.assertNotIn("Preflight passed", rendered["Checks"])
+        self.assertEqual(rendered["Payments"].count("Not started"), 3)
+        self.assertNotIn("Balances & fees verified", str(payload))
+
+    def test_partial_failure_keeps_verified_invoice_and_product_error(self):
+        payment = success_payment()
+        payment.update(schema_version=2, status="failure", liquidity_status="passed",
+                       failure={"stage": "keysend", "source": "fiber_rpc", "reason": "Failed to build route: insufficient balance"})
+        payment["scenarios"][0]["status"] = "success"
+        payment["scenarios"][1].update(status="failed", payment_status="Failed")
+        payment["scenarios"][2]["status"] = "not_started"
+        payload = self.failure_payload(payment)
+        rendered = fields(payload)
+        self.assertIn("1/3 payment scenarios verified", payload["embeds"][0]["description"])
+        self.assertIn("Keysend · Fiber RPC", rendered["Failure"])
+        self.assertIn("Failed to build route: insufficient balance", rendered["Failure"])
+        self.assertIn("✅ Invoice · B → A · **0.02 CKB** · fee 0 CKB", rendered["Payments"])
+        self.assertIn("❌ Keysend", rendered["Payments"])
+        self.assertIn("⏭️ Routed", rendered["Payments"])
+        self.assertNotIn("Balances & fees verified", str(payload))
+        for scenario in payment["scenarios"]:
+            self.assertNotIn(scenario["payment_hash"], str(payload))
+
+    def test_settled_but_unverified_and_unknown_are_distinct(self):
+        for status, payment_status, expected in [
+            ("unverified", "Success", "Settled; verification failed"),
+            ("unknown", "InFlight", "Outcome unknown; check payment hash before retrying"),
+            ("blocked", "not_sent", "Not sent; liquidity check failed"),
+        ]:
+            with self.subTest(status=status):
+                payment = {"status": "failure", "failure": {"stage": "keysend", "source": "balance_verification", "reason": "Fixture reason"},
+                           "scenarios": [{"key": "keysend", "status": status, "payment_status": payment_status, "amount_ckb": "0.01"}]}
+                payload = self.failure_payload(payment)
+                self.assertIn(expected, fields(payload)["Payments"])
+                self.assertIn("0/3 payment scenarios verified", payload["embeds"][0]["description"])
+                self.assertNotIn("Balances & fees verified", str(payload))
+
+    def test_explicit_non_success_scenarios_do_not_count_as_passes(self):
+        steps = complete_steps()
+        payment = success_payment()
+        payment["schema_version"] = 2
+        for scenario in payment["scenarios"]:
+            scenario["status"] = "success"
+        payment["scenarios"][1]["status"] = "unverified"
+        steps["payment_scheduled"]["outputs"]["report"] = json.dumps(payment)
+        text = str(report.payload_from_env(complete_env(steps)))
+        self.assertIn("2/3 payment scenarios have verified success summaries", text)
+        self.assertNotIn("3/3", text)
+        self.assertNotIn("Balances & fees verified", text)
+
+    def test_long_failure_is_bounded_and_preserves_three_status_lines(self):
+        hostile = "😀@everyone`\n" * 3000
+        payment = {"status": "failure", "failure": {"stage": "keysend", "source": "fiber_rpc", "reason": hostile},
+                   "scenarios": [{"key": key, "status": "unknown", "amount_ckb": hostile} for key, _ in report.SCENARIOS]}
+        payload = self.failure_payload(payment)
+        for field in payload["embeds"][0]["fields"]:
+            self.assertLessEqual(report._length(field["value"]), 1024)
+        self.assertEqual(len(fields(payload)["Payments"].splitlines()), 3)
+        self.assertEqual(payload["allowed_mentions"], {"parse": []})
+
     def test_long_untrusted_fields_obey_all_discord_limits(self):
         hostile = "😀@everyone`\n" * 2000
         steps = complete_steps()

@@ -245,6 +245,32 @@ def _scenario_summary(name: str, scenario: Mapping[str, Any]) -> str:
     return f"{name} · **{amount} CKB** · fee {fee} CKB"
 
 
+def _payment_scenarios(payment: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    raw = payment.get("scenarios")
+    return {
+        scenario["key"]: scenario for scenario in raw
+        if isinstance(scenario, Mapping) and isinstance(scenario.get("key"), str)
+        and scenario["key"] in {key for key, _ in SCENARIOS}
+    } if isinstance(raw, list) else {}
+
+
+def _failed_scenario_summary(name: str, scenario: Mapping[str, Any]) -> str:
+    status = _one_line(scenario.get("status"))
+    if status == "success":
+        return "✅ " + _scenario_summary(name, scenario)
+    amount = _truncate(_one_line(scenario.get("amount_ckb")), 64)
+    if status == "unverified" and scenario.get("payment_status") == "Success":
+        outcome = "⚠️", "Settled; verification failed"
+    else:
+        outcome = {
+            "not_started": ("⏭️", "Not started"),
+            "blocked": ("❌", "Not sent; liquidity check failed"),
+            "failed": ("❌", "Not sent; pre-send check failed" if scenario.get("payment_status") == "not_sent" else "Failed"),
+            "unknown": ("⚠️", "Outcome unknown; check payment hash before retrying"),
+        }.get(status, ("❔", "Result unavailable"))
+    return f"{outcome[0]} {name} · **{amount} CKB** · {outcome[1]}"
+
+
 def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
     """Render one bounded Discord embed without network side effects."""
     result = report.get("job_result")
@@ -268,12 +294,10 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
         description = "Payment flow disabled; no payments sent."
         fields.append({"name": "⏭️ Payment flow", "value": _truncate(_one_line(payment.get("reason")), FIELD_VALUE_LIMIT), "inline": False})
     elif payment.get("status") == "success":
-        raw_scenarios = payment.get("scenarios")
         scenarios = {
-            scenario.get("key"): scenario for scenario in raw_scenarios
-            if isinstance(scenario, Mapping) and isinstance(scenario.get("key"), str)
-            and scenario.get("key") in {key for key, _ in SCENARIOS}
-        } if isinstance(raw_scenarios, list) else {}
+            key: scenario for key, scenario in _payment_scenarios(payment).items()
+            if scenario.get("status") == "success" or ("status" not in scenario and "schema_version" not in payment)
+        }
         description = f"{len(scenarios)}/3 payment scenarios have verified success summaries."
         if len(scenarios) == 3:
             description = "3/3 payment scenarios passed."
@@ -283,6 +307,26 @@ def build_discord_payload(report: Mapping[str, Any]) -> dict[str, Any]:
             scenario = scenarios.get(key)
             payment_lines.append(_scenario_summary(name, scenario) if scenario else f"❔ {name} · Summary unavailable")
         fields.append({"name": "Payments", "value": _truncate("\n".join(payment_lines), FIELD_VALUE_LIMIT), "inline": False})
+    elif payment.get("status") == "failure":
+        scenarios = _payment_scenarios(payment)
+        verified = sum(scenario.get("status") == "success" for scenario in scenarios.values())
+        description = f"{verified}/3 payment scenarios verified; payment flow failed."
+        failure = _mapping(payment.get("failure"))
+        stage = {
+            "setup": "Setup", "preflight": "Liquidity preflight", "invoice": "Invoice",
+            "keysend": "Keysend", "routed": "Routed payment", "routed_verification": "Routed verification",
+        }.get(_one_line(failure.get("stage")), "Payment flow")
+        source = {
+            "liquidity": "Liquidity", "fiber_rpc": "Fiber RPC", "balance_verification": "Balance verification",
+            "fee_policy": "Fee policy", "configuration": "Configuration",
+        }.get(_one_line(failure.get("source")), "Failure")
+        reason = _truncate(_one_line(failure.get("reason"), "Failure reason unavailable; open the run log."), 850)
+        fields.append({"name": "Failure", "value": f"❌ {stage} · {source}\n{reason}", "inline": False})
+        if payment.get("liquidity_status") == "failed":
+            checks["value"] = checks["value"].replace("✅ Preflight passed", "✅ Node checks passed")
+            checks["value"] += " · ❌ Payment liquidity preflight"
+        lines = [_failed_scenario_summary(name, scenarios.get(key, {})) for key, name in SCENARIOS]
+        fields.append({"name": "Payments", "value": _truncate("\n".join(lines), FIELD_VALUE_LIMIT), "inline": False})
     else:
         outcome = report.get("payment_outcome")
         if outcome in {"failure", "cancelled"}:

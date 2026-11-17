@@ -12,341 +12,299 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-Import-Module (Join-Path $PSScriptRoot "FiberWindows.psm1") -Force
-
-if ([string]::IsNullOrWhiteSpace($PrimarySettingsPath)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:FIBER_WINDOWS_SETTINGS)) {
-        $PrimarySettingsPath = $env:FIBER_WINDOWS_SETTINGS
-    }
-    else {
-        $PrimarySettingsPath = "C:\fiber-node\automation\settings.json"
-    }
-}
-if ([string]::IsNullOrWhiteSpace($SecondarySettingsPath)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:FIBER_WINDOWS_SECONDARY_SETTINGS)) {
-        $SecondarySettingsPath = $env:FIBER_WINDOWS_SECONDARY_SETTINGS
-    }
-    else {
-        $SecondarySettingsPath = "C:\fiber-node-b\automation\settings.json"
-    }
-}
-
-$primarySettings = Import-FiberSettings -SettingsPath $PrimarySettingsPath
-$secondarySettings = Import-FiberSettings -SettingsPath $SecondarySettingsPath
-$paymentFlow = Get-ObjectPropertyValue -Object $primarySettings -Name "paymentFlow" -Default $null
-
-if ($Scheduled -and $null -ne $paymentFlow) {
-    $enabled = [bool](Get-ObjectPropertyValue -Object $paymentFlow -Name "enabled" -Default $true)
-    if (-not $enabled) {
-        Write-Host "Payment flow is disabled in settings; nothing sent"
-        if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
-            $disabledReport = @{
-                status = "disabled"
-                reason = "Payment flow is disabled in settings; nothing sent"
-            } | ConvertTo-Json -Compress
-            "report=$disabledReport" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-        }
-        return
-    }
-}
-if (-not $PSBoundParameters.ContainsKey("InvoiceAmountCkb")) {
-    $configuredInvoiceAmount = if ($null -eq $paymentFlow) {
-        "0.02"
-    }
-    else {
-        [string](Get-ObjectPropertyValue -Object $paymentFlow -Name "invoiceAmountCkb" -Default "0.02")
-    }
-    $InvoiceAmountCkb = [decimal]::Parse(
-        $configuredInvoiceAmount, [System.Globalization.CultureInfo]::InvariantCulture)
-}
-if (-not $PSBoundParameters.ContainsKey("KeysendAmountCkb")) {
-    $configuredKeysendAmount = if ($null -eq $paymentFlow) {
-        "0.01"
-    }
-    else {
-        [string](Get-ObjectPropertyValue -Object $paymentFlow -Name "keysendAmountCkb" -Default "0.01")
-    }
-    $KeysendAmountCkb = [decimal]::Parse(
-        $configuredKeysendAmount, [System.Globalization.CultureInfo]::InvariantCulture)
-}
-if (-not $PSBoundParameters.ContainsKey("RoutedKeysendAmountCkb")) {
-    $configuredRoutedAmount = if ($null -eq $paymentFlow) {
-        "0.03"
-    }
-    else {
-        [string](Get-ObjectPropertyValue -Object $paymentFlow -Name "routedKeysendAmountCkb" -Default "0.03")
-    }
-    $RoutedKeysendAmountCkb = [decimal]::Parse(
-        $configuredRoutedAmount, [System.Globalization.CultureInfo]::InvariantCulture)
-}
-if (-not $PSBoundParameters.ContainsKey("RoutedMaxFeeCkb")) {
-    $configuredRoutedMaxFee = if ($null -eq $paymentFlow) {
-        "0.001"
-    }
-    else {
-        [string](Get-ObjectPropertyValue -Object $paymentFlow -Name "routedMaxFeeCkb" -Default "0.001")
-    }
-    $RoutedMaxFeeCkb = [decimal]::Parse(
-        $configuredRoutedMaxFee, [System.Globalization.CultureInfo]::InvariantCulture)
-}
-
-$invoiceAmount = Convert-CkbToShannons -AmountCkb $InvoiceAmountCkb
-$keysendAmount = Convert-CkbToShannons -AmountCkb $KeysendAmountCkb
-$routedKeysendAmount = Convert-CkbToShannons -AmountCkb $RoutedKeysendAmountCkb
-$routedMaxFee = Convert-CkbToShannons -AmountCkb $RoutedMaxFeeCkb
-$primaryInfo = Wait-FiberRpc -Settings $primarySettings -TimeoutSeconds 60
-$secondaryInfo = Wait-FiberRpc -Settings $secondarySettings -TimeoutSeconds 60
-if (-not [string]::Equals(
-    [string]$secondarySettings.peer.pubkey,
-    [string]$primaryInfo.pubkey,
-    [System.StringComparison]::OrdinalIgnoreCase
-)) {
-    throw "Node B is configured for $($secondarySettings.peer.pubkey), not node A $($primaryInfo.pubkey)"
-}
-
-$publicNodeName = "CkbaNode-1"
-
-function Get-ReadyFlowChannel {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$Settings,
-        [Parameter(Mandatory = $true)]
-        [string]$Description
-    )
-
-    $channels = @(Get-PeerChannels -Settings $Settings | Where-Object { Test-ChannelReady -Channel $_ })
-    if ($channels.Count -eq 0) {
-        throw "$Description has no ChannelReady channel"
-    }
-    return $channels[0]
-}
-
-$null = Get-ReadyFlowChannel -Settings $primarySettings -Description "Node A -> $publicNodeName"
-$null = Get-ReadyFlowChannel -Settings $secondarySettings -Description "Node B -> Node A"
-
 function Format-FlowCkb {
-    param(
-        [Parameter(Mandatory = $true)]
-        [System.Numerics.BigInteger]$Shannons
-    )
-
+    param([Parameter(Mandatory = $true)][System.Numerics.BigInteger]$Shannons)
     return (Format-CkbBalance -Shannons $Shannons).TrimEnd("0").TrimEnd(".")
 }
 
-$invoiceAmountDisplay = Format-FlowCkb -Shannons $invoiceAmount
-$keysendAmountDisplay = Format-FlowCkb -Shannons $keysendAmount
-$routedKeysendAmountDisplay = Format-FlowCkb -Shannons $routedKeysendAmount
-
-Write-Host ("=" * 60)
-Write-Host "PAYMENT FLOW"
-Write-Host ("=" * 60)
-Write-Host "Node B -- $invoiceAmountDisplay CKB Invoice --> Node A"
-Write-Host "Node A -- $keysendAmountDisplay CKB Keysend --> $publicNodeName"
-Write-Host "Node B -- $routedKeysendAmountDisplay CKB Routed Keysend --> Node A --> $publicNodeName (routing fee)"
-Write-Host "Node A: $($primaryInfo.pubkey)"
-Write-Host "Node B: $($secondaryInfo.pubkey)"
-Write-Host ""
-
-$invoiceResult = Invoke-FiberRpc -Settings $primarySettings -Method "new_invoice" -Params @(@{
-    amount         = ConvertTo-HexQuantity -Value $invoiceAmount
-    currency       = "Fibt"
-    description    = "fiber-windows-smoke node B to node A"
-    expiry         = ConvertTo-HexQuantity -Value ([System.Numerics.BigInteger]3600)
-    hash_algorithm = "sha256"
-    allow_mpp      = $false
-})
-$invoice = [string]$invoiceResult.invoice_address
-if ([string]::IsNullOrWhiteSpace($invoice)) {
-    throw "Node A new_invoice returned no invoice_address"
+function Complete-FlowScenario {
+    param([hashtable]$Scenario, [object]$Payment, [string]$LocalLabel, [string]$RemoteLabel)
+    if ($Payment.Status -ne "Success" -or $Payment.Assertions -ne "Passed") {
+        throw "Payment did not return a verified success result"
+    }
+    $Scenario.status = "success"
+    $Scenario.payment_status = "Success"
+    $Scenario.submitted = $true
+    $Scenario.payment_hash = [string]$Payment.PaymentHash
+    $Scenario.fee_ckb = Format-FlowCkb $Payment.Fee
+    $Scenario.fee_shannons = [string]$Payment.Fee
+    $Scenario.assertions = "Exact amount, zero fee, and balance conservation passed"
+    $Scenario.balances = @(
+        @{ label = $LocalLabel; before_ckb = Format-FlowCkb $Payment.LocalBefore; after_ckb = Format-FlowCkb $Payment.LocalAfter }
+        @{ label = $RemoteLabel; before_ckb = Format-FlowCkb $Payment.RemoteBefore; after_ckb = Format-FlowCkb $Payment.RemoteAfter }
+    )
 }
 
-$invoicePayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
-    -SettingsPath $SecondarySettingsPath `
-    -Mode Invoice `
-    -AmountCkb $InvoiceAmountCkb `
-    -Invoice $invoice `
-    -PassThru `
-    -AssertExactDirectBalance
-
-$keysendPayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
-    -SettingsPath $PrimarySettingsPath `
-    -Mode Keysend `
-    -AmountCkb $KeysendAmountCkb `
-    -PassThru `
-    -AssertExactDirectBalance
-
-$routedSecondHopBefore = Get-ReadyFlowChannel -Settings $primarySettings -Description "Node A -> $publicNodeName"
-$routedFeeRate = ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.tlc_fee_proportional_millionths)
-$expectedRoutingFee = Get-FiberForwardingFee `
-    -Amount $routedKeysendAmount `
-    -FeeRateMillionths $routedFeeRate
-if ($expectedRoutingFee -le [System.Numerics.BigInteger]::Zero) {
-    throw "Node A forwarding fee rate produced a zero fee; this routed-fee smoke test requires a positive fee"
-}
-if ($expectedRoutingFee -gt $routedMaxFee) {
-    throw "Expected routing fee exceeds the configured routed payment fee limit"
+function Add-FlowChannelInventory {
+    param([object]$Snapshot, [string]$Node)
+    foreach ($channel in $Snapshot.Channels) {
+        $entry = [ordered]@{
+            node = $Node; channel_id = $channel.Id; state = $channel.State; asset = $channel.Asset
+            state_flags = $channel.StateFlags; shutdown_transaction_hash = $channel.ShutdownTransaction
+            enabled = $channel.Enabled; outbound = $channel.Outbound
+            local_ckb = $(if ($channel.Asset -eq "CKB") { Format-FlowCkb $channel.Local } else { $null })
+            remote_ckb = $(if ($channel.Asset -eq "CKB") { Format-FlowCkb $channel.Remote } else { $null })
+            available_ckb = Format-FlowCkb $channel.Available
+        }
+        $paymentReport.channels += $entry
+        Write-Host "$Node channel=$($channel.Id) state=$($channel.State) asset=$($channel.Asset) outbound=$($channel.Outbound) available=$($entry.available_ckb) CKB"
+    }
 }
 
-$routedPayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
-    -SettingsPath $SecondarySettingsPath `
-    -Mode Keysend `
-    -AmountCkb $RoutedKeysendAmountCkb `
-    -TargetPubkey ([string]$primarySettings.peer.pubkey) `
-    -PaymentLabel "Routed keysend B -> A -> $publicNodeName" `
-    -MaximumFeeCkb ($RoutedMaxFeeCkb.ToString([System.Globalization.CultureInfo]::InvariantCulture)) `
-    -ExpectedRoutingFee $expectedRoutingFee `
-    -PassThru `
-    -AssertExactRoutedBalance
-
-$routedSecondHopAfter = Get-ReadyFlowChannel -Settings $primarySettings -Description "Node A -> $publicNodeName"
-$routedSecondHopAssertion = Assert-FiberDirectPaymentBalance `
-    -Label "Routed keysend A -> $publicNodeName hop" `
-    -ExpectedAmount $routedKeysendAmount `
-    -Fee ([System.Numerics.BigInteger]::Zero) `
-    -LocalBefore (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.local_balance)) `
-    -LocalAfter (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopAfter.local_balance)) `
-    -RemoteBefore (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.remote_balance)) `
-    -RemoteAfter (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopAfter.remote_balance))
-
-$invoiceLocalBefore = Format-FlowCkb -Shannons $invoicePayment.LocalBefore
-$invoiceLocalAfter = Format-FlowCkb -Shannons $invoicePayment.LocalAfter
-$invoiceRemoteBefore = Format-FlowCkb -Shannons $invoicePayment.RemoteBefore
-$invoiceRemoteAfter = Format-FlowCkb -Shannons $invoicePayment.RemoteAfter
-$invoiceFee = Format-FlowCkb -Shannons $invoicePayment.Fee
-$keysendLocalBefore = Format-FlowCkb -Shannons $keysendPayment.LocalBefore
-$keysendLocalAfter = Format-FlowCkb -Shannons $keysendPayment.LocalAfter
-$keysendRemoteBefore = Format-FlowCkb -Shannons $keysendPayment.RemoteBefore
-$keysendRemoteAfter = Format-FlowCkb -Shannons $keysendPayment.RemoteAfter
-$keysendFee = Format-FlowCkb -Shannons $keysendPayment.Fee
-$routedLocalBefore = Format-FlowCkb -Shannons $routedPayment.LocalBefore
-$routedLocalAfter = Format-FlowCkb -Shannons $routedPayment.LocalAfter
-$routedRemoteBefore = Format-FlowCkb -Shannons $routedPayment.RemoteBefore
-$routedRemoteAfter = Format-FlowCkb -Shannons $routedPayment.RemoteAfter
-$routedPublicNodeLocalBefore = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.local_balance))
-$routedPublicNodeLocalAfter = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopAfter.local_balance))
-$routedPublicNodeRemoteBefore = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopBefore.remote_balance))
-$routedPublicNodeRemoteAfter = Format-FlowCkb -Shannons (ConvertFrom-HexQuantity -Value ([string]$routedSecondHopAfter.remote_balance))
-$routingFee = Format-FlowCkb -Shannons $routedPayment.Fee
-
-# Export the same verified values used by the log and Job Summary below. An
-# absent report on failure means the complete flow was not verified; consumers
-# must not infer the status of individual payments from that absence.
-if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
-    $paymentReport = @{
-        status = "success"
-        scenarios = @(
-            @{
-                key = "invoice"
-                amount_ckb = $invoiceAmountDisplay
-                fee_ckb = $invoiceFee
-                fee_shannons = [string]$invoicePayment.Fee
-                payment_hash = [string]$invoicePayment.PaymentHash
-                assertions = "Exact amount, zero fee, and balance conservation passed"
-                balances = @(
-                    @{ label = "Node B"; before_ckb = $invoiceLocalBefore; after_ckb = $invoiceLocalAfter }
-                    @{ label = "Node A"; before_ckb = $invoiceRemoteBefore; after_ckb = $invoiceRemoteAfter }
-                )
+function Write-FlowReport {
+    # A failed step still exports its verified prefix and the active payment's
+    # last known state. Report once, then preserve the original terminating error.
+    if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
+        $json = $paymentReport | ConvertTo-Json -Depth 12 -Compress
+        "report=$json" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+    }
+    $lines = @("## Actual payment result", "", "**Payment flow:** $($paymentReport.status)", "")
+    if ($null -ne $paymentReport.failure) {
+        $failure = $paymentReport.failure
+        $lines += "**Failure:** [$($failure.source)] $($failure.stage): $($failure.reason)", ""
+    }
+    if ($paymentReport.status -eq "disabled") { $lines += $paymentReport.reason }
+    else {
+        $headings = @("1. Invoice: Node B &rarr; Node A", "2. Keysend: Node A &rarr; CkbaNode-1", "3. Routed Keysend: Node B &rarr; Node A &rarr; CkbaNode-1")
+        for ($i = 0; $i -lt $paymentReport.scenarios.Count; $i++) {
+            $scenario = $paymentReport.scenarios[$i]
+            $lines += "### $($headings[$i]) ($($scenario.amount_ckb) CKB)", ""
+            $lines += "- **Status:** $($scenario.status) (Fiber: $($scenario.payment_status))"
+            foreach ($balance in @($scenario.balances)) {
+                $lines += "- **$($balance.label):** $($balance.before_ckb) &rarr; $($balance.after_ckb) CKB"
             }
-            @{
-                key = "keysend"
-                amount_ckb = $keysendAmountDisplay
-                fee_ckb = $keysendFee
-                fee_shannons = [string]$keysendPayment.Fee
-                payment_hash = [string]$keysendPayment.PaymentHash
-                assertions = "Exact amount, zero fee, and balance conservation passed"
-                balances = @(
-                    @{ label = "Node A"; before_ckb = $keysendLocalBefore; after_ckb = $keysendLocalAfter }
-                    @{ label = $publicNodeName; before_ckb = $keysendRemoteBefore; after_ckb = $keysendRemoteAfter }
-                )
+            if ($scenario.ContainsKey("fee_ckb")) {
+                $lines += "- **Routing fee:** $($scenario.fee_ckb) CKB ($($scenario.fee_shannons) shannons)"
             }
-            @{
-                key = "routed"
-                amount_ckb = $routedKeysendAmountDisplay
-                fee_ckb = $routingFee
-                fee_shannons = [string]$routedPayment.Fee
-                fee_rate_millionths = [string]$routedFeeRate
-                payment_hash = [string]$routedPayment.PaymentHash
-                assertions = "Positive fee, exact first-hop amount plus fee, exact second-hop amount, and balance conservation passed"
-                balances = @(
-                    @{ label = "Node B / B-to-A"; before_ckb = $routedLocalBefore; after_ckb = $routedLocalAfter }
-                    @{ label = "Node A incoming / B-to-A"; before_ckb = $routedRemoteBefore; after_ckb = $routedRemoteAfter }
-                    @{ label = "Node A outgoing / A-to-$publicNodeName"; before_ckb = $routedPublicNodeLocalBefore; after_ckb = $routedPublicNodeLocalAfter }
-                    @{ label = $publicNodeName; before_ckb = $routedPublicNodeRemoteBefore; after_ckb = $routedPublicNodeRemoteAfter }
-                )
+            if ($scenario.ContainsKey("fee_rate_millionths")) {
+                $lines += "- **Forwarding fee rate:** $($scenario.fee_rate_millionths) millionths"
             }
-        )
-    } | ConvertTo-Json -Depth 8 -Compress
-    "report=$paymentReport" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            if ($scenario.status -eq "success") { $lines += "- **Assertions:** &#x2705; $($scenario.assertions)" }
+            if ($scenario.ContainsKey("reason")) { $lines += "- **Reason:** $($scenario.reason)" }
+            if ($scenario.ContainsKey("payment_hash")) { $lines += "- **Payment hash:** $($scenario.payment_hash)" }
+            $lines += ""
+        }
+        if ($paymentReport.channels.Count -gt 0) {
+            $lines += "### Channel inventory before payments", "", "| Node | Channel ID | State | Asset | Outbound | Local | Remote | Available CKB |", "| --- | --- | --- | --- | --- | --- | --- | --- |"
+            foreach ($channel in $paymentReport.channels) {
+                $lines += "| $($channel.node) | $($channel.channel_id) | $($channel.state) $($channel.state_flags) | $($channel.asset) | $($channel.outbound) | $($channel.local_ckb) | $($channel.remote_ckb) | $($channel.available_ckb) |"
+            }
+            foreach ($channel in @($paymentReport.channels | Where-Object { -not [string]::IsNullOrEmpty($_.shutdown_transaction_hash) })) {
+                $lines += "", "Shutdown transaction ($($channel.channel_id)): $($channel.shutdown_transaction_hash)"
+            }
+            $lines += "", "Available CKB excludes offered TLCs, closed/disabled channels, UDT channels, and receive-only channels. Balance assertions cover the same set of Ready CKB channels to the configured peer; product routing is automatic."
+        }
+    }
+    $summary = $lines -join "`n"
+    Write-Host $summary
+    if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
+        $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+    }
 }
 
-Write-Host ("=" * 60)
-Write-Host "PAYMENT FLOW RESULT - SUCCESS"
-Write-Host ("=" * 60)
-Write-Host ""
-Write-Host "1. Node B -> Node A | Invoice $invoiceAmountDisplay CKB"
-Write-Host "   Node B : $invoiceLocalBefore -> $invoiceLocalAfter CKB"
-Write-Host "   Node A : $invoiceRemoteBefore -> $invoiceRemoteAfter CKB"
-Write-Host "   Routing fee : $invoiceFee CKB"
-Write-Host "   Assert : PASSED (exact $invoiceAmountDisplay CKB transfer)"
-Write-Host ""
-Write-Host "2. Node A -> $publicNodeName | Keysend $keysendAmountDisplay CKB"
-Write-Host "   Node A : $keysendLocalBefore -> $keysendLocalAfter CKB"
-Write-Host "   $publicNodeName : $keysendRemoteBefore -> $keysendRemoteAfter CKB"
-Write-Host "   Routing fee : $keysendFee CKB"
-Write-Host "   Assert : PASSED (exact $keysendAmountDisplay CKB transfer)"
-Write-Host ""
-Write-Host "3. Node B -> Node A -> $publicNodeName | Routed Keysend $routedKeysendAmountDisplay CKB"
-Write-Host "   B -> A local  : $routedLocalBefore -> $routedLocalAfter CKB"
-Write-Host "   B -> A remote : $routedRemoteBefore -> $routedRemoteAfter CKB"
-Write-Host "   A -> $publicNodeName : $routedPublicNodeLocalBefore -> $routedPublicNodeLocalAfter CKB"
-Write-Host "   $publicNodeName      : $routedPublicNodeRemoteBefore -> $routedPublicNodeRemoteAfter CKB"
-Write-Host "   Routing fee   : $routingFee CKB ($($routedPayment.Fee) shannons at $routedFeeRate millionths)"
-Write-Host "   Assert        : PASSED (positive fee, both hops, and balance conservation)"
-Write-Host ""
-Write-Host "FEE PATH: Node B -- $routedKeysendAmountDisplay CKB + $routingFee CKB fee --> Node A -- $routedKeysendAmountDisplay CKB --> $publicNodeName"
-Write-Host ""
-
-if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
-    $summary = @"
-## Actual payment result
-
-> **1. Invoice:** **Node B** -- **$invoiceAmountDisplay CKB** &rarr; **Node A**
-
-> **2. Keysend:** **Node A** -- **$keysendAmountDisplay CKB** &rarr; **$publicNodeName** *(Fiber testnet public node)*
-
-> **3. Routed Keysend:** **Node B** -- **$routedKeysendAmountDisplay CKB + $routingFee CKB fee** &rarr; **Node A** &rarr; **$publicNodeName**
-
-### 1. Invoice: Node B &rarr; Node A ($invoiceAmountDisplay CKB)
-
-- **Node B:** $invoiceLocalBefore &rarr; $invoiceLocalAfter CKB
-- **Node A:** $invoiceRemoteBefore &rarr; $invoiceRemoteAfter CKB
-- **Routing fee:** $invoiceFee CKB
-- **Assertions:** &#x2705; Exact amount, zero fee, and balance conservation passed
-- **Status:** &#x2705; **Success**
-- **Payment hash:** $($invoicePayment.PaymentHash)
-
-### 2. Keysend: Node A &rarr; $publicNodeName ($keysendAmountDisplay CKB)
-
-- **Node A:** $keysendLocalBefore &rarr; $keysendLocalAfter CKB
-- **${publicNodeName}:** $keysendRemoteBefore &rarr; $keysendRemoteAfter CKB
-- **Routing fee:** $keysendFee CKB
-- **Assertions:** &#x2705; Exact amount, zero fee, and balance conservation passed
-- **Status:** &#x2705; **Success**
-- **Payment hash:** $($keysendPayment.PaymentHash)
-
-### 3. Routed Keysend: Node B &rarr; Node A &rarr; $publicNodeName ($routedKeysendAmountDisplay CKB)
-
-- **Node B / B-to-A channel:** $routedLocalBefore &rarr; $routedLocalAfter CKB
-- **Node A incoming / B-to-A channel:** $routedRemoteBefore &rarr; $routedRemoteAfter CKB
-- **Node A outgoing / A-to-$publicNodeName channel:** $routedPublicNodeLocalBefore &rarr; $routedPublicNodeLocalAfter CKB
-- **${publicNodeName}:** $routedPublicNodeRemoteBefore &rarr; $routedPublicNodeRemoteAfter CKB
-- **Routing fee earned by Node A:** **$routingFee CKB** ($($routedPayment.Fee) shannons, rate $routedFeeRate millionths)
-- **Assertions:** &#x2705; Positive fee, exact first-hop amount plus fee, exact second-hop amount, and balance conservation passed
-- **Status:** &#x2705; **Success**
-- **Payment hash:** $($routedPayment.PaymentHash)
-"@
-    $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-    Write-Host "GitHub Job Summary updated"
+$paymentReport = [ordered]@{
+    schema_version = 2; status = "running"; stage = "setup"; liquidity_status = "not_checked"
+    failure = $null; channels = @()
+    scenarios = @("invoice", "keysend", "routed" | ForEach-Object {
+        @{ key = $_; status = "not_started"; payment_status = "not_sent"; submitted = $false; amount_ckb = "unavailable"; balances = @() }
+    })
 }
+$activeScenario = -1
+$progress = @{}
+$failureSource = "configuration"
+try {
+    Import-Module (Join-Path $PSScriptRoot "FiberWindows.psm1") -Force
+    if ([string]::IsNullOrWhiteSpace($PrimarySettingsPath)) {
+        if (-not [string]::IsNullOrWhiteSpace($env:FIBER_WINDOWS_SETTINGS)) {
+            $PrimarySettingsPath = $env:FIBER_WINDOWS_SETTINGS
+        }
+        else {
+            $PrimarySettingsPath = "C:\fiber-node\automation\settings.json"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($SecondarySettingsPath)) {
+        if (-not [string]::IsNullOrWhiteSpace($env:FIBER_WINDOWS_SECONDARY_SETTINGS)) {
+            $SecondarySettingsPath = $env:FIBER_WINDOWS_SECONDARY_SETTINGS
+        }
+        else {
+            $SecondarySettingsPath = "C:\fiber-node-b\automation\settings.json"
+        }
+    }
 
-Write-Host "Payment flow succeeded: invoice $InvoiceAmountCkb CKB, direct keysend $KeysendAmountCkb CKB, routed keysend $RoutedKeysendAmountCkb CKB with $routingFee CKB fee"
+    $primarySettings = Import-FiberSettings -SettingsPath $PrimarySettingsPath
+    $secondarySettings = Import-FiberSettings -SettingsPath $SecondarySettingsPath
+    $paymentFlow = Get-ObjectPropertyValue -Object $primarySettings -Name "paymentFlow" -Default $null
+
+    if ($Scheduled -and $null -ne $paymentFlow) {
+        $enabled = [bool](Get-ObjectPropertyValue -Object $paymentFlow -Name "enabled" -Default $true)
+        if (-not $enabled) {
+            Write-Host "Payment flow is disabled in settings; nothing sent"
+            $paymentReport.status = "disabled"
+            $paymentReport.reason = "Payment flow is disabled in settings; nothing sent"
+            $paymentReport.scenarios = @()
+            return
+        }
+    }
+    if (-not $PSBoundParameters.ContainsKey("InvoiceAmountCkb")) {
+        $configuredInvoiceAmount = if ($null -eq $paymentFlow) {
+            "0.02"
+        }
+        else {
+            [string](Get-ObjectPropertyValue -Object $paymentFlow -Name "invoiceAmountCkb" -Default "0.02")
+        }
+        $InvoiceAmountCkb = [decimal]::Parse(
+            $configuredInvoiceAmount, [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    if (-not $PSBoundParameters.ContainsKey("KeysendAmountCkb")) {
+        $configuredKeysendAmount = if ($null -eq $paymentFlow) {
+            "0.01"
+        }
+        else {
+            [string](Get-ObjectPropertyValue -Object $paymentFlow -Name "keysendAmountCkb" -Default "0.01")
+        }
+        $KeysendAmountCkb = [decimal]::Parse(
+            $configuredKeysendAmount, [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    if (-not $PSBoundParameters.ContainsKey("RoutedKeysendAmountCkb")) {
+        $configuredRoutedAmount = if ($null -eq $paymentFlow) {
+            "0.03"
+        }
+        else {
+            [string](Get-ObjectPropertyValue -Object $paymentFlow -Name "routedKeysendAmountCkb" -Default "0.03")
+        }
+        $RoutedKeysendAmountCkb = [decimal]::Parse(
+            $configuredRoutedAmount, [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    if (-not $PSBoundParameters.ContainsKey("RoutedMaxFeeCkb")) {
+        $configuredRoutedMaxFee = if ($null -eq $paymentFlow) {
+            "0.001"
+        }
+        else {
+            [string](Get-ObjectPropertyValue -Object $paymentFlow -Name "routedMaxFeeCkb" -Default "0.001")
+        }
+        $RoutedMaxFeeCkb = [decimal]::Parse(
+            $configuredRoutedMaxFee, [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+
+    $invoiceAmount = Convert-CkbToShannons -AmountCkb $InvoiceAmountCkb
+    $keysendAmount = Convert-CkbToShannons -AmountCkb $KeysendAmountCkb
+    $routedKeysendAmount = Convert-CkbToShannons -AmountCkb $RoutedKeysendAmountCkb
+    $routedMaxFee = Convert-CkbToShannons -AmountCkb $RoutedMaxFeeCkb
+
+    $paymentReport.scenarios[0].amount_ckb = Format-FlowCkb $invoiceAmount
+    $paymentReport.scenarios[1].amount_ckb = Format-FlowCkb $keysendAmount
+    $paymentReport.scenarios[2].amount_ckb = Format-FlowCkb $routedKeysendAmount
+    $failureSource = "fiber_rpc"
+    $primaryInfo = Wait-FiberRpc -Settings $primarySettings -TimeoutSeconds 60
+    $secondaryInfo = Wait-FiberRpc -Settings $secondarySettings -TimeoutSeconds 60
+    if (-not [string]::Equals([string]$secondarySettings.peer.pubkey, [string]$primaryInfo.pubkey,
+        [System.StringComparison]::OrdinalIgnoreCase)) {
+        $failureSource = "configuration"
+        throw "Node B is configured for $($secondarySettings.peer.pubkey), not node A $($primaryInfo.pubkey)"
+    }
+
+    $paymentReport.stage = "preflight"
+    $paymentReport.liquidity_status = "checking"
+    $primaryBefore = Get-FiberPaymentSnapshot -Settings $primarySettings
+    $secondaryBefore = Get-FiberPaymentSnapshot -Settings $secondarySettings
+    Add-FlowChannelInventory -Snapshot $primaryBefore -Node "A -> CkbaNode-1"
+    Add-FlowChannelInventory -Snapshot $secondaryBefore -Node "B -> A"
+    $failureSource = "liquidity"
+    # Check the whole round before creating an invoice or sending any payment.
+    # Direct payments request zero fee; B reserves the routed maximum fee.
+    $null = Assert-FiberPaymentLiquidity -Snapshot $primaryBefore `
+        -Amounts @($keysendAmount, $routedKeysendAmount) -Description "Node A -> CkbaNode-1 (whole flow)"
+    $null = Assert-FiberPaymentLiquidity -Snapshot $secondaryBefore `
+        -Amounts @($invoiceAmount, ($routedKeysendAmount + $routedMaxFee)) -Description "Node B -> Node A (whole flow)"
+    $feeCandidates = @($primaryBefore.ReadyChannels | Where-Object { $_.Outbound -and $_.Available -ge $routedKeysendAmount } |
+        Where-Object {
+            $fee = Get-FiberForwardingFee -Amount $routedKeysendAmount -FeeRateMillionths $_.FeeRate
+            $fee -gt [System.Numerics.BigInteger]::Zero -and $fee -le $routedMaxFee
+        })
+    if ($feeCandidates.Count -eq 0) {
+        $failureSource = "fee_policy"
+        throw "No usable A -> CkbaNode-1 channel offers a positive forwarding fee within the routed fee limit"
+    }
+    $paymentReport.liquidity_status = "passed"
+
+    $paymentReport.stage = "invoice"
+    $activeScenario = 0
+    $progress = @{ failure_source = "fiber_rpc"; status = "failed"; submitted = $false; payment_status = "not_sent" }
+    $invoiceResult = Invoke-FiberRpc -Settings $primarySettings -Method "new_invoice" -Params @(@{
+        amount = ConvertTo-HexQuantity $invoiceAmount; currency = "Fibt"
+        description = "fiber-windows-smoke node B to node A"; expiry = "0xe10"
+        hash_algorithm = "sha256"; allow_mpp = $false
+    })
+    $invoice = [string]$invoiceResult.invoice_address
+    if ([string]::IsNullOrWhiteSpace($invoice)) { throw "Node A new_invoice returned no invoice_address" }
+    $invoicePayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
+        -SettingsPath $SecondarySettingsPath -Mode Invoice -AmountCkb $InvoiceAmountCkb `
+        -Invoice $invoice -PassThru -AssertExactDirectBalance -PaymentProgress $progress
+    Complete-FlowScenario $paymentReport.scenarios[0] $invoicePayment "Node B" "Node A"
+
+    $paymentReport.stage = "keysend"
+    $activeScenario = 1
+    $progress = @{}
+    $keysendPayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
+        -SettingsPath $PrimarySettingsPath -Mode Keysend -AmountCkb $KeysendAmountCkb `
+        -PassThru -AssertExactDirectBalance -PaymentProgress $progress
+    Complete-FlowScenario $paymentReport.scenarios[1] $keysendPayment "Node A" "CkbaNode-1"
+
+    $paymentReport.stage = "routed"
+    $activeScenario = 2
+    $progress = @{ failure_source = "fiber_rpc"; status = "failed"; submitted = $false; payment_status = "not_sent" }
+    $routedSecondHopBefore = Get-FiberPaymentSnapshot -Settings $primarySettings
+    $progress.failure_source = "liquidity"
+    $progress.status = "blocked"
+    $null = Assert-FiberPaymentLiquidity -Snapshot $routedSecondHopBefore -Amounts @($routedKeysendAmount) -Description "Routed A -> CkbaNode-1 hop"
+    $routedPayment = & (Join-Path $PSScriptRoot "Send-DailyPayment.ps1") `
+        -SettingsPath $SecondarySettingsPath -Mode Keysend -AmountCkb $RoutedKeysendAmountCkb `
+        -TargetPubkey ([string]$primarySettings.peer.pubkey) -PaymentLabel "Routed keysend B -> A -> CkbaNode-1" `
+        -MaximumFeeCkb ($RoutedMaxFeeCkb.ToString([System.Globalization.CultureInfo]::InvariantCulture)) `
+        -DeferRoutingFeeValidation -PassThru -AssertExactRoutedBalance -PaymentProgress $progress
+    # Fiber settled the payment; it is not fully verified until BOTH hops and the
+    # fee rate on the actual outgoing channel have been checked.
+    $progress.status = "unverified"
+    $progress.failure_source = "fiber_rpc"
+    $paymentReport.stage = "routed_verification"
+    $routedSecondHopAfter = Get-FiberPaymentSnapshot -Settings $primarySettings
+    $progress.failure_source = "balance_verification"
+    $actualChannel = Get-FiberForwardedChannel -Before $routedSecondHopBefore -After $routedSecondHopAfter -Amount $routedKeysendAmount
+    $expectedFee = Get-FiberForwardingFee -Amount $routedKeysendAmount -FeeRateMillionths $actualChannel.FeeRate
+    $null = Assert-FiberRoutedPaymentBalance -Label "Routed keysend" -ExpectedAmount $routedKeysendAmount `
+        -ExpectedFee $expectedFee -ActualFee $routedPayment.Fee `
+        -LocalBefore $routedPayment.LocalBefore -LocalAfter $routedPayment.LocalAfter `
+        -RemoteBefore $routedPayment.RemoteBefore -RemoteAfter $routedPayment.RemoteAfter
+    Complete-FlowScenario $paymentReport.scenarios[2] $routedPayment "Node B / B-to-A" "Node A incoming / B-to-A"
+    $routed = $paymentReport.scenarios[2]
+    $routed.fee_rate_millionths = [string]$actualChannel.FeeRate
+    $routed.channel_id = $actualChannel.Id
+    $routed.assertions = "Positive fee, exact first-hop amount plus fee, exact second-hop amount, and balance conservation passed"
+    $routed.balances += @(
+        @{ label = "Node A outgoing / A-to-CkbaNode-1"; before_ckb = Format-FlowCkb $routedSecondHopBefore.Local; after_ckb = Format-FlowCkb $routedSecondHopAfter.Local }
+        @{ label = "CkbaNode-1"; before_ckb = Format-FlowCkb $routedSecondHopBefore.Remote; after_ckb = Format-FlowCkb $routedSecondHopAfter.Remote }
+    )
+    $paymentReport.status = "success"
+    $paymentReport.stage = "complete"
+}
+catch {
+    $paymentReport.status = "failure"
+    if ($paymentReport.liquidity_status -eq "checking") { $paymentReport.liquidity_status = "failed" }
+    $reason = $_.Exception.Message
+    if ($activeScenario -ge 0) {
+        $scenario = $paymentReport.scenarios[$activeScenario]
+        foreach ($key in @("status", "payment_status", "submitted", "payment_hash", "fee_ckb", "fee_shannons", "balances")) {
+            if ($progress.ContainsKey($key)) { $scenario[$key] = $progress[$key] }
+        }
+        if ($scenario.status -notin @("blocked", "failed", "unverified", "unknown")) {
+            $scenario.status = if ($scenario.payment_status -eq "Success") { "unverified" } else { "failed" }
+        }
+        $scenario.reason = $reason
+        if ($progress.ContainsKey("failure_source")) { $failureSource = $progress.failure_source }
+    }
+    $paymentReport.failure = @{ stage = $paymentReport.stage; source = $failureSource; reason = $reason }
+    throw
+}
+finally {
+    Write-FlowReport
+}

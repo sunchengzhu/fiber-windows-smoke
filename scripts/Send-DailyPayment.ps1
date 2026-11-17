@@ -15,11 +15,20 @@ param(
     [switch]$Scheduled,
     [switch]$PassThru,
     [switch]$AssertExactDirectBalance,
-    [switch]$AssertExactRoutedBalance
+    [switch]$AssertExactRoutedBalance,
+    [switch]$DeferRoutingFeeValidation,
+    [hashtable]$PaymentProgress
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# The parent keeps this object even if a later RPC or balance assertion throws.
+if ($null -eq $PaymentProgress) { $PaymentProgress = @{} }
+$PaymentProgress.status = "not_started"
+$PaymentProgress.payment_status = "not_sent"
+$PaymentProgress.submitted = $false
+$PaymentProgress.failure_source = "configuration"
 
 Import-Module (Join-Path $PSScriptRoot "FiberWindows.psm1") -Force
 $SettingsPath = Resolve-FiberSettingsPath -SettingsPath $SettingsPath -ScriptRoot $PSScriptRoot
@@ -85,6 +94,14 @@ if ($AssertExactDirectBalance -and $AssertExactRoutedBalance) {
 if ($AssertExactRoutedBalance -and $Mode -notin @("Keysend", "Both")) {
     throw "Routed balance assertions require Keysend mode"
 }
+if ($DeferRoutingFeeValidation -and -not $AssertExactRoutedBalance) {
+    throw "Deferred fee validation requires routed balance assertions"
+}
+if ($AssertExactDirectBalance) {
+    # An exact direct payment requires zero fee, so ask the router for that too.
+    $maxFeeShannons = [System.Numerics.BigInteger]::Zero
+    $keysendMaxFeeShannons = [System.Numerics.BigInteger]::Zero
+}
 
 $keysendTargetPubkey = [string]$settings.peer.pubkey
 if (-not [string]::IsNullOrWhiteSpace($TargetPubkey)) {
@@ -95,14 +112,6 @@ if (-not [string]::IsNullOrWhiteSpace($TargetPubkey)) {
 }
 $keysendLabel = if ([string]::IsNullOrWhiteSpace($PaymentLabel)) { "Keysend" } else { $PaymentLabel }
 
-function Get-ReadyPaymentChannel {
-    $channels = @(Get-PeerChannels -Settings $settings | Where-Object { Test-ChannelReady -Channel $_ })
-    if ($channels.Count -eq 0) {
-        throw "No ChannelReady channel exists for payment peer $($settings.peer.pubkey)"
-    }
-    return $channels[0]
-}
-
 function Wait-PaymentSuccess {
     param(
         [Parameter(Mandatory = $true)]
@@ -111,12 +120,14 @@ function Wait-PaymentSuccess {
 
     $payment = $InitialPayment
     $paymentHash = [string]$payment.payment_hash
+    $PaymentProgress.payment_hash = $paymentHash
     if ([string]::IsNullOrWhiteSpace($paymentHash)) {
         throw "send_payment returned no payment_hash"
     }
     Write-Host "Payment hash : $paymentHash"
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds + 15)
     while ([string]$payment.status -notin @("Success", "Failed")) {
+        $PaymentProgress.payment_status = [string]$payment.status
         if ([DateTime]::UtcNow -ge $deadline) {
             throw "Payment $paymentHash did not finish within $TimeoutSeconds seconds; last status: $($payment.status)"
         }
@@ -127,8 +138,14 @@ function Wait-PaymentSuccess {
         })
     }
     if ([string]$payment.status -eq "Failed") {
+        $PaymentProgress.status = "failed"
+        $PaymentProgress.payment_status = "Failed"
         throw "Payment $paymentHash failed: $($payment.failed_error)"
     }
+    $PaymentProgress.status = "unverified"
+    $PaymentProgress.payment_status = "Success"
+    $PaymentProgress.fee_shannons = [string](ConvertFrom-HexQuantity -Value ([string]$payment.fee))
+    $PaymentProgress.fee_ckb = Format-CkbBalance -Shannons ([System.Numerics.BigInteger]$PaymentProgress.fee_shannons)
     return $payment
 }
 
@@ -148,12 +165,14 @@ function Send-SmokePayment {
         [System.Numerics.BigInteger]$RequiredRoutingFee = [System.Numerics.BigInteger]::Zero
     )
 
-    $channelBefore = Get-ReadyPaymentChannel
-    $localBefore = ConvertFrom-HexQuantity -Value ([string]$channelBefore.local_balance)
-    $remoteBefore = ConvertFrom-HexQuantity -Value ([string]$channelBefore.remote_balance)
-    if ($localBefore -lt ($ExpectedAmount + $MaximumFee)) {
-        throw "Insufficient local balance for $Label payment and fee allowance"
-    }
+    $PaymentProgress.status = "failed"
+    $PaymentProgress.failure_source = "fiber_rpc"
+    $snapshotBefore = Get-FiberPaymentSnapshot -Settings $settings
+    $PaymentProgress.status = "blocked"
+    $PaymentProgress.failure_source = "liquidity"
+    $candidate = Assert-FiberPaymentLiquidity -Snapshot $snapshotBefore -Amounts @($ExpectedAmount + $MaximumFee) -Description $Label
+    $localBefore = $snapshotBefore.Local
+    $remoteBefore = $snapshotBefore.Remote
 
     Write-Host ("=" * 60)
     Write-Host "$($Label.ToUpperInvariant()) - BEFORE"
@@ -161,14 +180,27 @@ function Send-SmokePayment {
     Write-Host "Amount : $(Format-CkbBalance -Shannons $ExpectedAmount) CKB"
     Write-Host "Local  : $(Format-CkbBalance -Shannons $localBefore) CKB"
     Write-Host "Remote : $(Format-CkbBalance -Shannons $remoteBefore) CKB"
+    Write-Host "Peer CKB balance scope: $($snapshotBefore.ReadyChannels.Count) Ready channel(s); capacity candidate=$($candidate.Id)"
     Write-Host (Format-FiberLiquidityBar -LocalBalance $localBefore -RemoteBalance $remoteBefore)
     Write-Host ""
 
+    # Keep automatic product routing. A capacity candidate is not a pinned route.
+    $PaymentProgress.status = "unknown"
+    $PaymentProgress.payment_status = "unknown"
+    $PaymentProgress.submitted = $true
+    $PaymentProgress.failure_source = "fiber_rpc"
     $initialPayment = Invoke-FiberRpc -Settings $settings -Method "send_payment" -Params @($PaymentParams) -TimeoutSeconds 60
     $payment = Wait-PaymentSuccess -InitialPayment $initialPayment
-    $channelAfter = Get-ReadyPaymentChannel
-    $localAfter = ConvertFrom-HexQuantity -Value ([string]$channelAfter.local_balance)
-    $remoteAfter = ConvertFrom-HexQuantity -Value ([string]$channelAfter.remote_balance)
+    $PaymentProgress.failure_source = "fiber_rpc"
+    $snapshotAfter = Get-FiberPaymentSnapshot -Settings $settings
+    $PaymentProgress.failure_source = "balance_verification"
+    $PaymentProgress.balances = @(
+        @{ label = "Sender / peer CKB local"; before_ckb = Format-CkbBalance $snapshotBefore.Local; after_ckb = Format-CkbBalance $snapshotAfter.Local }
+        @{ label = "Receiver / peer CKB remote"; before_ckb = Format-CkbBalance $snapshotBefore.Remote; after_ckb = Format-CkbBalance $snapshotAfter.Remote }
+    )
+    Assert-FiberPaymentSnapshotStable -Before $snapshotBefore -After $snapshotAfter
+    $localAfter = $snapshotAfter.Local
+    $remoteAfter = $snapshotAfter.Remote
     $fee = ConvertFrom-HexQuantity -Value ([string]$payment.fee)
     $balanceAssertion = $null
     if ($RequireExactDirectBalance) {
@@ -182,6 +214,9 @@ function Send-SmokePayment {
             -RemoteAfter $remoteAfter
     }
     elseif ($RequireExactRoutedBalance) {
+        # The full flow verifies the fee against the channel actually used by A
+        # after the second hop. Here still require a positive, conserved fee.
+        if ($DeferRoutingFeeValidation) { $RequiredRoutingFee = $fee }
         $balanceAssertion = Assert-FiberRoutedPaymentBalance `
             -Label $Label `
             -ExpectedAmount $ExpectedAmount `
@@ -192,6 +227,8 @@ function Send-SmokePayment {
             -RemoteBefore $remoteBefore `
             -RemoteAfter $remoteAfter
     }
+    if ($fee -gt $MaximumFee) { throw "$Label fee exceeds the requested maximum fee" }
+    $PaymentProgress.status = "success"
 
     Write-Host ""
     Write-Host ("=" * 60)
@@ -245,6 +282,7 @@ if ($Mode -in @("Keysend", "Both")) {
 }
 
 if ($Mode -in @("Invoice", "Both")) {
+    $PaymentProgress.failure_source = "fiber_rpc"
     if ([string]::IsNullOrWhiteSpace($Invoice)) {
         if ([string]::IsNullOrWhiteSpace($InvoiceReceiverRpcUrl)) {
             throw "Invoice mode needs -Invoice or dailyPayment.invoiceReceiverRpcUrl for a receiver you control"

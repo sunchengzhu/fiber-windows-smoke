@@ -30,7 +30,7 @@ $peerConnected = @($peers.peers | Where-Object {
     [string]::Equals([string]$_.pubkey, [string]$settings.peer.pubkey,
         [System.StringComparison]::OrdinalIgnoreCase)
 }).Count -gt 0
-$channels = @(Get-PeerChannels -Settings $settings)
+$channels = @(Get-PeerChannels -Settings $settings -IncludeClosed)
 $readyChannels = @($channels | Where-Object { Test-ChannelReady -Channel $_ })
 
 if ($Compact) {
@@ -49,11 +49,11 @@ if ($Compact) {
     Write-Host "[$Label] $healthStatus  service=$($service.Status)  fnn=$($nodeInfo.version)  peers=$(@($peers.peers).Count)"
 
     if ($channels.Count -gt 0) {
-        $channel = if ($readyChannels.Count -gt 0) { $readyChannels[0] } else { $channels[0] }
-        $localBalance = ConvertFrom-HexQuantity -Value ([string]$channel.local_balance)
-        $remoteBalance = ConvertFrom-HexQuantity -Value ([string]$channel.remote_balance)
-        Write-Host "  $(Get-ChannelStateName -Channel $channel)  local=$(Format-CkbBalance -Shannons $localBalance)  remote=$(Format-CkbBalance -Shannons $remoteBalance) CKB"
-        Write-Host "  $(Format-FiberLiquidityBar -LocalBalance $localBalance -RemoteBalance $remoteBalance -Width 16)"
+        $snapshot = New-FiberPaymentSnapshot -Channels $channels
+        Write-Host "  Ready CKB channels=$($snapshot.ReadyChannels.Count); payment liquidity is checked separately"
+        foreach ($channel in $snapshot.Channels) {
+            Write-Host "  id=$($channel.Id) state=$($channel.State) asset=$($channel.Asset) outbound=$($channel.Outbound) available=$(Format-CkbBalance $channel.Available) CKB"
+        }
     }
     else {
         Write-Host "  channel=None"

@@ -626,6 +626,136 @@ function Test-ChannelReady {
     return (Get-ChannelStateName -Channel $Channel) -in @("ChannelReady", "CHANNEL_READY")
 }
 
+function New-FiberPaymentSnapshot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Channels
+    )
+
+    $entries = @($Channels | ForEach-Object {
+        $id = [string]$_.channel_id
+        if ([string]::IsNullOrWhiteSpace($id)) { throw "Channel snapshot has no channel_id" }
+        $local = ConvertFrom-HexQuantity -Value ([string]$_.local_balance)
+        $remote = ConvertFrom-HexQuantity -Value ([string]$_.remote_balance)
+        $offered = ConvertFrom-HexQuantity -Value ([string](Get-ObjectPropertyValue $_ "offered_tlc_balance" "0x0"))
+        $ckb = $null -eq (Get-ObjectPropertyValue $_ "funding_udt_type_script" $null)
+        $ready = Test-ChannelReady -Channel $_
+        $enabled = [bool](Get-ObjectPropertyValue $_ "enabled" $false)
+        $receiveOnly = [bool](Get-ObjectPropertyValue $_ "is_one_way" $false) -and
+            [bool](Get-ObjectPropertyValue $_ "is_acceptor" $false)
+        $outbound = $ready -and $ckb -and $enabled -and -not $receiveOnly
+        $available = [System.Numerics.BigInteger]::Zero
+        if ($outbound -and $local -gt $offered) { $available = $local - $offered }
+        [pscustomobject]@{
+            Id = $id; State = Get-ChannelStateName -Channel $_
+            StateFlags = [string](Get-ObjectPropertyValue $_.state "state_flags" "")
+            ShutdownTransaction = [string](Get-ObjectPropertyValue $_ "shutdown_transaction_hash" "")
+            Asset = $(if ($ckb) { "CKB" } else { "UDT" })
+            Ready = $ready; Enabled = $enabled; Outbound = $outbound
+            Local = $local; Remote = $remote; Offered = $offered; Available = $available
+            FeeRate = ConvertFrom-HexQuantity -Value ([string](Get-ObjectPropertyValue $_ "tlc_fee_proportional_millionths" "0x0"))
+        }
+    })
+    if (@($entries | Group-Object Id | Where-Object Count -gt 1).Count -gt 0) {
+        throw "Channel snapshot contains duplicate channel IDs"
+    }
+    $readyCkb = @($entries | Where-Object { $_.Ready -and $_.Asset -eq "CKB" } | Sort-Object Id)
+    $localTotal = [System.Numerics.BigInteger]::Zero
+    $remoteTotal = [System.Numerics.BigInteger]::Zero
+    foreach ($channel in $readyCkb) {
+        $localTotal += $channel.Local
+        $remoteTotal += $channel.Remote
+    }
+    return [pscustomobject]@{
+        Channels = $entries; ReadyChannels = $readyCkb
+        Local = $localTotal; Remote = $remoteTotal
+    }
+}
+
+function Get-FiberPaymentSnapshot {
+    param([Parameter(Mandatory = $true)][object]$Settings)
+
+    # Closed balances explain lost liquidity but must never be spendable funds.
+    return New-FiberPaymentSnapshot -Channels @(Get-PeerChannels -Settings $Settings -IncludeClosed)
+}
+
+function Assert-FiberPaymentLiquidity {
+    param(
+        [Parameter(Mandatory = $true)][object]$Snapshot,
+        [Parameter(Mandatory = $true)][System.Numerics.BigInteger[]]$Amounts,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $required = [System.Numerics.BigInteger]::Zero
+    $largest = [System.Numerics.BigInteger]::Zero
+    foreach ($amount in $Amounts) {
+        if ($amount -le [System.Numerics.BigInteger]::Zero) { throw "Payment budget must be positive" }
+        $required += $amount
+        if ($amount -gt $largest) { $largest = $amount }
+    }
+    $candidates = @($Snapshot.ReadyChannels | Where-Object Outbound |
+        Sort-Object @{ Expression = { $_.Available }; Descending = $true }, Id)
+    $total = [System.Numerics.BigInteger]::Zero
+    foreach ($channel in $candidates) { $total += $channel.Available }
+    $maximum = [System.Numerics.BigInteger]::Zero
+    if ($candidates.Count -gt 0) { $maximum = $candidates[0].Available }
+    if ($total -lt $required -or $maximum -lt $largest) {
+        $closed = @($Snapshot.Channels | Where-Object { $_.State -in @("Closed", "CLOSED") }).Count
+        $message = "$Description insufficient outbound CKB liquidity: need $(Format-CkbBalance $required) CKB total " +
+            "(largest payment plus fee allowance $(Format-CkbBalance $largest) CKB); available $(Format-CkbBalance $total) CKB, " +
+            "largest usable channel $(Format-CkbBalance $maximum) CKB; Ready CKB=$($Snapshot.ReadyChannels.Count), Closed=$closed. " +
+            "Remote and closed-channel balances are not outbound liquidity."
+        $errorRecord = [System.InvalidOperationException]::new($message)
+        $errorRecord.Data["FailureSource"] = "liquidity"
+        throw $errorRecord
+    }
+    # This is a capacity check, not a reservation or a route override. Each send
+    # checks again; concurrent payments and routing errors remain visible.
+    return $candidates[0]
+}
+
+function Assert-FiberPaymentSnapshotStable {
+    param(
+        [Parameter(Mandatory = $true)][object]$Before,
+        [Parameter(Mandatory = $true)][object]$After
+    )
+
+    $beforeIds = @($Before.ReadyChannels | ForEach-Object Id) -join ","
+    $afterIds = @($After.ReadyChannels | ForEach-Object Id) -join ","
+    if ($beforeIds -cne $afterIds) {
+        throw "Ready CKB channel set changed during payment; exact balance verification is unavailable"
+    }
+}
+
+function Get-FiberForwardedChannel {
+    param(
+        [Parameter(Mandatory = $true)][object]$Before,
+        [Parameter(Mandatory = $true)][object]$After,
+        [Parameter(Mandatory = $true)][System.Numerics.BigInteger]$Amount
+    )
+
+    Assert-FiberPaymentSnapshotStable -Before $Before -After $After
+    $changed = @($Before.ReadyChannels | Where-Object {
+        $id = $_.Id
+        $later = @($After.ReadyChannels | Where-Object Id -eq $id)[0]
+        $_.Local -ne $later.Local -or $_.Remote -ne $later.Remote
+    })
+    if ($changed.Count -ne 1) {
+        throw "Routed second hop changed $($changed.Count) channels; expected exactly one for this single-part smoke payment"
+    }
+    $beforeChannel = $changed[0]
+    $afterChannel = @($After.ReadyChannels | Where-Object Id -eq $beforeChannel.Id)[0]
+    if (-not $beforeChannel.Outbound) { throw "Routed second hop used a channel that was not eligible for outbound payments" }
+    $null = Assert-FiberDirectPaymentBalance -Label "Routed second hop" -ExpectedAmount $Amount `
+        -Fee ([System.Numerics.BigInteger]::Zero) -LocalBefore $beforeChannel.Local -LocalAfter $afterChannel.Local `
+        -RemoteBefore $beforeChannel.Remote -RemoteAfter $afterChannel.Remote
+    if ($beforeChannel.FeeRate -ne $afterChannel.FeeRate) {
+        throw "Routed second-hop fee rate changed during payment; expected fee cannot be verified"
+    }
+    return $beforeChannel
+}
+
 function Wait-PeerChannelReady {
     param(
         [Parameter(Mandatory = $true)]
@@ -762,6 +892,8 @@ Export-ModuleMember -Function @(
     "Format-CkbBalance",
     "Format-FiberLiquidityBar",
     "Get-FiberForwardingFee",
+    "Get-FiberForwardedChannel",
+    "Get-FiberPaymentSnapshot",
     "Get-ChannelStateName",
     "Get-ExecutableVersion",
     "Get-FiberPaths",
@@ -773,6 +905,9 @@ Export-ModuleMember -Function @(
     "Import-FiberSettings",
     "Invoke-FiberRpc",
     "New-FiberDirectories",
+    "New-FiberPaymentSnapshot",
+    "Assert-FiberPaymentLiquidity",
+    "Assert-FiberPaymentSnapshotStable",
     "Resolve-FiberSettingsPath",
     "Start-FiberService",
     "Stop-FiberService",

@@ -22,16 +22,16 @@ finally {
 if ((Convert-CkbToShannons -AmountCkb 2000) -ne [System.Numerics.BigInteger]::Parse("200000000000")) {
     throw "Convert-CkbToShannons produced an unexpected amount for 2000 CKB"
 }
-if ((Convert-CkbToShannons -AmountCkb 0.01) -ne [System.Numerics.BigInteger]::Parse("1000000")) {
+if ((Convert-CkbToShannons -AmountCkb ([decimal]::Parse("0.01", [cultureinfo]::InvariantCulture))) -ne [System.Numerics.BigInteger]::Parse("1000000")) {
     throw "Convert-CkbToShannons produced an unexpected amount for 0.01 CKB"
 }
-if ((Convert-CkbToShannons -AmountCkb 0.02) -ne [System.Numerics.BigInteger]::Parse("2000000")) {
+if ((Convert-CkbToShannons -AmountCkb ([decimal]::Parse("0.02", [cultureinfo]::InvariantCulture))) -ne [System.Numerics.BigInteger]::Parse("2000000")) {
     throw "Convert-CkbToShannons produced an unexpected amount for 0.02 CKB"
 }
 if ((Convert-CkbToShannons -AmountCkb 5000) -ne [System.Numerics.BigInteger]::Parse("500000000000")) {
     throw "Convert-CkbToShannons produced an unexpected amount for 5000 CKB"
 }
-if ((Convert-CkbToShannons -AmountCkb 1.00000001) -ne [System.Numerics.BigInteger]::Parse("100000001")) {
+if ((Convert-CkbToShannons -AmountCkb ([decimal]::Parse("1.00000001", [cultureinfo]::InvariantCulture))) -ne [System.Numerics.BigInteger]::Parse("100000001")) {
     throw "Convert-CkbToShannons did not preserve 8 decimal places"
 }
 if (-not (Test-FiberPeerInitPendingError -Message "Peer Pubkey(02ab)'s feature not found, waiting for peer to send Init message")) {
@@ -198,6 +198,69 @@ $legacyChannel = [pscustomobject]@{ state = "CHANNEL_READY" }
 if (-not (Test-ChannelReady -Channel $legacyChannel)) {
     throw "Test-ChannelReady rejected legacy CHANNEL_READY"
 }
+
+# Native CKB payment eligibility, independent of list order or closed balances.
+function New-TestPaymentChannel {
+    param([string]$Id, [long]$Local, [string]$State = "ChannelReady")
+    return [pscustomobject]@{
+        channel_id = $Id; state = [pscustomobject]@{ state_name = $State }
+        local_balance = ConvertTo-HexQuantity ([System.Numerics.BigInteger]$Local); remote_balance = "0x64"
+        offered_tlc_balance = "0x0"; funding_udt_type_script = $null; enabled = $true
+        is_one_way = $false; is_acceptor = $false; tlc_fee_proportional_millionths = "0x3e8"
+    }
+}
+$empty = New-TestPaymentChannel "new-empty" 0
+$funded = New-TestPaymentChannel "funded" 10000000
+$closed = New-TestPaymentChannel "closed" 189830000000 "Closed"
+$unusable = @(
+    (New-TestPaymentChannel "disabled" 900000000),
+    (New-TestPaymentChannel "receive-only" 900000000),
+    (New-TestPaymentChannel "udt" 900000000)
+)
+$unusable[0].enabled = $false
+$unusable[1].is_one_way = $true
+$unusable[1].is_acceptor = $true
+$unusable[2].funding_udt_type_script = [pscustomobject]@{ args = "0x1234" }
+$snapshot = New-FiberPaymentSnapshot -Channels (@($empty, $closed) + $unusable + @($funded))
+$chosen = Assert-FiberPaymentLiquidity -Snapshot $snapshot -Amounts @(4000000) -Description "Selection"
+if ($chosen.Id -ne "funded") { throw "Liquidity check chose an empty or ineligible channel" }
+$before = New-FiberPaymentSnapshot -Channels @($empty, $funded, $closed)
+$reordered = New-FiberPaymentSnapshot -Channels @($closed, $funded, $empty)
+Assert-FiberPaymentSnapshotStable -Before $before -After $reordered
+if ($before.Local -ne 10000000 -or $before.Remote -ne 200) { throw "Closed balances entered Ready CKB assertions" }
+Assert-ActionFails -ExpectedMessage "insufficient outbound CKB liquidity" -Action {
+    $snapshot = New-FiberPaymentSnapshot -Channels (@($empty, $closed) + $unusable)
+    Assert-FiberPaymentLiquidity -Snapshot $snapshot -Amounts @(1000000) -Description "No usable funds"
+}
+$funded.offered_tlc_balance = "0x895440" # 9,000,000 offered, only 1,000,000 available.
+Assert-ActionFails -ExpectedMessage "insufficient outbound CKB liquidity" -Action {
+    $snapshot = New-FiberPaymentSnapshot -Channels @($funded)
+    Assert-FiberPaymentLiquidity -Snapshot $snapshot -Amounts @(1000001) -Description "Offered TLC reservation"
+}
+$funded.offered_tlc_balance = "0x0"
+Assert-ActionFails -ExpectedMessage "insufficient outbound CKB liquidity" -Action {
+    Assert-FiberPaymentLiquidity -Snapshot $before -Amounts @(6000000, 5000000) -Description "Whole flow budget"
+}
+Assert-ActionFails -ExpectedMessage "insufficient outbound CKB liquidity" -Action {
+    $fragmented = New-FiberPaymentSnapshot -Channels @((New-TestPaymentChannel "one" 2000000), (New-TestPaymentChannel "two" 2000000))
+    Assert-FiberPaymentLiquidity -Snapshot $fragmented -Amounts @(3000000) -Description "Single-part capacity"
+}
+Assert-ActionFails -ExpectedMessage "channel set changed" -Action {
+    Assert-FiberPaymentSnapshotStable -Before $before -After (New-FiberPaymentSnapshot -Channels @($funded))
+}
+Assert-ActionFails -ExpectedMessage "insufficient outbound CKB liquidity" -Action {
+    Assert-FiberPaymentLiquidity -Snapshot (New-FiberPaymentSnapshot -Channels @()) -Amounts @(1) -Description "No channels"
+}
+# Verify the forwarding fee on the channel that actually moved, even if another
+# Ready channel has more liquidity and a different fee policy.
+$other = New-TestPaymentChannel "larger-unused" 900000000
+$other.tlc_fee_proportional_millionths = "0x7d0"
+$before = New-FiberPaymentSnapshot -Channels @($other, $funded)
+$afterFunded = New-TestPaymentChannel "funded" 7000000
+$afterFunded.remote_balance = ConvertTo-HexQuantity ([System.Numerics.BigInteger]3000100)
+$after = New-FiberPaymentSnapshot -Channels @($afterFunded, $other)
+$actual = Get-FiberForwardedChannel -Before $before -After $after -Amount 3000000
+if ($actual.Id -ne "funded" -or $actual.FeeRate -ne 1000) { throw "Forwarding fee policy came from an unused channel" }
 
 $rfcScript = [pscustomobject]@{
     code_hash = "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8"
